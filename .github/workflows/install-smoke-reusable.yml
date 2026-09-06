@@ -50,6 +50,7 @@ jobs:
       run_fast_install_smoke: ${{ steps.manifest.outputs.run_fast_install_smoke }}
       run_full_install_smoke: ${{ steps.manifest.outputs.run_full_install_smoke }}
       run_bun_global_install_smoke: ${{ steps.manifest.outputs.run_bun_global_install_smoke }}
+      fs_safe_native_contract: ${{ steps.manifest.outputs.fs_safe_native_contract }}
       target_sha: ${{ steps.manifest.outputs.target_sha }}
       dockerfile_image: ${{ steps.manifest.outputs.dockerfile_image }}
     steps:
@@ -85,6 +86,61 @@ jobs:
           persist-credentials: false
           submodules: false
 
+      # The candidate checkout above owns the source fact. This separate, pinned
+      # harness checkout supplies only the resolver that reads that source fact.
+      - name: Checkout release source resolver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: openclaw/openclaw
+          ref: main
+          path: .release-harness
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore release source resolver revision
+        id: resolver
+        env:
+          EXPECTED_WORKFLOW_REPOSITORY: ${{ github.repository }}
+          HARNESS_PATH: .release-harness
+          JOB_CONTEXT: ${{ toJSON(job) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from "node:fs";
+          import { execFileSync } from "node:child_process";
+          const job = JSON.parse(process.env.JOB_CONTEXT ?? "{}");
+          const repository = process.env.EXPECTED_WORKFLOW_REPOSITORY ?? "";
+          const harnessPath = process.env.HARNESS_PATH ?? "";
+          if (repository !== "openclaw/openclaw" || job.workflow_repository !== repository) {
+            throw new Error("job.workflow_repository must exactly match github.repository");
+          }
+          if (typeof job.workflow_sha !== "string" || !/^[0-9a-f]{40}$/u.test(job.workflow_sha)) {
+            throw new Error("job.workflow_sha must be a full lowercase commit SHA");
+          }
+          if (harnessPath !== ".release-harness") throw new Error("trusted harness path is invalid");
+          const git = (...args) =>
+            execFileSync("git", ["-C", harnessPath, ...args], {
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "inherit"],
+            }).trim();
+          if (git("remote", "get-url", "origin").replace(/\.git$/u, "") !== `https://github.com/${repository}`) {
+            throw new Error("trusted harness remote does not match the workflow repository");
+          }
+          execFileSync("git", ["-C", harnessPath, "fetch", "--no-tags", "--depth=1", "origin", job.workflow_sha], {
+            stdio: "inherit",
+          });
+          execFileSync("git", ["-C", harnessPath, "checkout", "--detach", job.workflow_sha], {
+            stdio: "inherit",
+          });
+          if (git("rev-parse", "HEAD") !== job.workflow_sha) {
+            throw new Error("trusted harness checkout did not resolve to job.workflow_sha");
+          }
+          const outputPath = process.env.GITHUB_OUTPUT;
+          if (!outputPath) throw new Error("GITHUB_OUTPUT is required");
+          appendFileSync(outputPath, `sha=${job.workflow_sha}\n`);
+          NODE
+
       - name: Build install-smoke CI manifest
         id: manifest
         env:
@@ -98,6 +154,11 @@ jobs:
           run_bun_global_install_smoke="$workflow_bun_global_install_smoke"
           run_install_smoke=true
           target_sha="$(git rev-parse HEAD)"
+          fs_safe_native_contract="$(node .release-harness/scripts/resolve-fs-safe-native-contract.mjs \
+            --repository "$GITHUB_WORKSPACE" \
+            --ref "$target_sha" \
+            --workflow-sha "${{ steps.resolver.outputs.sha }}" \
+            --allow-frozen-source "${{ inputs.allow_frozen_target_scenario_omissions && '1' || '0' }}")"
           dockerfile_image="openclaw-dockerfile-smoke-local:${target_sha}"
           {
             echo "docs_only=$docs_only"
@@ -105,6 +166,7 @@ jobs:
             echo "run_fast_install_smoke=$run_fast_install_smoke"
             echo "run_full_install_smoke=$run_full_install_smoke"
             echo "run_bun_global_install_smoke=$run_bun_global_install_smoke"
+            echo "fs_safe_native_contract=$fs_safe_native_contract"
             echo "target_sha=$target_sha"
             echo "dockerfile_image=$dockerfile_image"
           } >> "$GITHUB_OUTPUT"
@@ -1465,6 +1527,7 @@ jobs:
       - name: Run Bun global install candidate-payload smoke
         working-directory: .release-harness
         env:
+          OPENCLAW_FS_SAFE_NATIVE_CONTRACT: ${{ needs.preflight.outputs.fs_safe_native_contract }}
           OPENCLAW_BUN_GLOBAL_SMOKE_HOST_BUILD: "0"
           OPENCLAW_BUN_GLOBAL_SMOKE_PACKAGE_TGZ: ${{ runner.temp }}/install-smoke-candidate-payload/candidate.tgz
         run: bash scripts/e2e/bun-global-install-smoke.sh

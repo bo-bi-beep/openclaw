@@ -14,6 +14,7 @@ PNPM_PROOF_CONTAINER="openclaw-package-pnpm-proof-$$"
 BUN_PROOF_CONTAINER="openclaw-package-bun-proof-$$"
 MUSL_PROOF_CONTAINER="openclaw-package-musl-proof-$$"
 DOCKER_RUN_TIMEOUT="${OPENCLAW_DOCKER_PACKAGE_INSTALL_RUN_TIMEOUT:-120s}"
+FS_SAFE_NATIVE_CONTRACT="${OPENCLAW_FS_SAFE_NATIVE_CONTRACT:-required}"
 PACKAGE_HARNESS_DIR="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-package-harness.XXXXXX")"
 docker_e2e_package_mount_args "$PACKAGE_TGZ"
 
@@ -46,6 +47,7 @@ echo "Installing the real OpenClaw package artifact with npm as root..."
 DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d \
   --name "$NPM_PROOF_CONTAINER" \
   --user root \
+  -e "OPENCLAW_FS_SAFE_NATIVE_CONTRACT=$FS_SAFE_NATIVE_CONTRACT" \
   "${DOCKER_E2E_PACKAGE_ARGS[@]}" \
   -v "$PACKAGE_HARNESS_DIR:/repo:ro" \
   -v "$ROOT_DIR/scripts/docker/verify-fs-safe-native.mjs:/tmp/verify-fs-safe-native.mjs:ro" \
@@ -69,6 +71,7 @@ DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d \
 echo "Installing the real OpenClaw package artifact with pnpm..."
 DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d \
   --name "$PNPM_PROOF_CONTAINER" \
+  -e "OPENCLAW_FS_SAFE_NATIVE_CONTRACT=$FS_SAFE_NATIVE_CONTRACT" \
   "${DOCKER_E2E_PACKAGE_ARGS[@]}" \
   -v "$PACKAGE_HARNESS_DIR:/repo:ro" \
   -v "$ROOT_DIR/scripts/docker/verify-fs-safe-native.mjs:/tmp/verify-fs-safe-native.mjs:ro" \
@@ -146,6 +149,7 @@ DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d \
 echo "Installing the real OpenClaw package artifact with npm on musl..."
 DOCKER_COMMAND_TIMEOUT="$DOCKER_RUN_TIMEOUT" docker_e2e_docker_run_cmd run -d \
   --name "$MUSL_PROOF_CONTAINER" \
+  -e "OPENCLAW_FS_SAFE_NATIVE_CONTRACT=$FS_SAFE_NATIVE_CONTRACT" \
   "${DOCKER_E2E_PACKAGE_ARGS[@]}" \
   "$MUSL_IMAGE_NAME" \
   sh -lc '

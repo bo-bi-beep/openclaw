@@ -29,6 +29,18 @@ function parseArgs(argv) {
   return { mode, packageRoot: fs.realpathSync(packageRoot) };
 }
 
+const fsSafeNativeContract = process.env.OPENCLAW_FS_SAFE_NATIVE_CONTRACT ?? "required";
+assert.ok(
+  fsSafeNativeContract === "required" || fsSafeNativeContract === "not-applicable",
+  "OPENCLAW_FS_SAFE_NATIVE_CONTRACT must be required or not-applicable",
+);
+if (fsSafeNativeContract === "not-applicable") {
+  console.log(
+    "Skipping fs-safe native proof: selected source has the published pre-native contract.",
+  );
+  process.exit(0);
+}
+
 const { mode, packageRoot } = parseArgs(process.argv.slice(2));
 const requireFromPackage = createRequire(path.join(packageRoot, "package.json"));
 const fsSafeManifestPath = requireFromPackage.resolve("@openclaw/fs-safe/package.json");
