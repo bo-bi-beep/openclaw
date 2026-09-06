@@ -624,6 +624,7 @@ are Gateway settings and remain available in every browser.
     - Debug: status/health/models snapshots, event log, manual RPC calls, and a System busyness overlay with live CPU, memory, event-loop delay, and per-disk free-space graphs (`status`, `health`, `models.list`, `system.info`). Connection also shows each mounted local storage volume separately, labeled by its mount path. Disk snapshots refresh every ten seconds; memory-backed filesystems and hidden macOS system volumes are excluded.
     - Lane tables omit disabled, empty lanes, including `hook-dispatch` when HTTP hooks are off. Disabled lanes remain visible while work is running or queued.
     - The event log includes Control UI refresh/RPC timings, slow chat/config render timings, and browser responsiveness entries for long animation frames or long tasks when the browser exposes those PerformanceObserver entry types.
+    - Diagnostic event history belongs to the selected Gateway and authentication context. Applying a different Gateway URL or credential clears the previous history immediately, even if the new connection fails. A reconnect authenticated as a different account also clears it. Reconnects with unchanged authentication preserve history for troubleshooting.
     - Logs: live tail of gateway file logs with filter/export (`logs.tail`).
     - Update: run a package/git update plus restart (`update.run`) with a restart report, then poll `update.status` after reconnect to verify the running gateway version.
 
@@ -732,7 +733,7 @@ The Sessions view owns its query independently of the sidebar. Its people filter
 
 The Sessions view batches bursts of session-change events into a refresh. Event-driven refreshes pause while the browser tab is hidden and catch up once when you return. Changing filters or retrying a failed request still loads immediately.
 
-Live activity entries keep only sanitized summaries and redacted, truncated output previews. Tool argument values are not stored in Activity state; the UI shows that arguments are hidden and records only the argument field count. The in-memory list follows the current browser tab, survives navigation within the Control UI, and resets on page reload, session switch, Gateway switch, or **Clear**.
+Live activity entries keep only sanitized summaries and redacted, truncated output previews. Tool argument values are not stored in Activity state; the UI shows that arguments are hidden and records only the argument field count. The in-memory list follows the current browser tab, survives navigation within the Control UI, and resets on page reload, session switch, Gateway or authentication-context change, or **Clear**. Ordinary reconnects preserve the list and expanded entries.
 
 The Run inspector shows the retained trust domain, ingress, invoker, represented subject, sponsor, agent definition and principal, runtime instance, applicable grants, assurance evidence, lineage, and a bounded decision-receipt list. Every fact has a text evidence state. **Absent** means the owning boundary explicitly recorded no value; **unattributed** means a supported path had no usable invoker; **unknown** means expected evidence is missing or unreadable; and **unsupported** means the path has no Phase 0 evidence contract. Color is supplemental only.
 
