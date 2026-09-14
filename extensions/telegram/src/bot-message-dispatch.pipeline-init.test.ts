@@ -18,19 +18,18 @@ const settledDispatchResult = {
   counts: { block: 0, final: 0, tool: 0 },
 };
 
-function installTypingPipeline(start: () => Promise<void>) {
-  createChannelMessageReplyPipeline.mockReturnValueOnce({
-    responsePrefix: undefined,
-    responsePrefixContextProvider: () => ({ identityName: undefined }),
-    resolveResponsePrefix: () => undefined,
-    onModelSelected: () => undefined,
-    typingCallbacks: createTypingCallbacks({
-      start,
-      keepaliveIntervalMs: 4_000,
-      maxDurationMs: 0,
-      maxConsecutiveFailures: 5,
-      onStartError: vi.fn(),
-    }),
+function installTypingPipeline() {
+  createChannelMessageReplyPipeline.mockImplementationOnce((params) => {
+    if (!params.typing) {
+      throw new Error("expected Telegram typing options");
+    }
+    return {
+      responsePrefix: undefined,
+      responsePrefixContextProvider: () => ({ identityName: undefined }),
+      resolveResponsePrefix: () => undefined,
+      onModelSelected: () => undefined,
+      typingCallbacks: createTypingCallbacks(params.typing),
+    };
   });
 }
 
@@ -75,7 +74,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     try {
       const dispatch = createDeferred<typeof settledDispatchResult>();
       const context = createContext({ sendTyping: vi.fn(async () => undefined) });
-      installTypingPipeline(context.sendTyping);
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({ context });
@@ -91,15 +90,10 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
           }),
         }),
       );
-      expect(dispatchReplyWithBufferedBlockDispatcher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          replyOptions: expect.objectContaining({ typingKeepalive: false }),
-        }),
-      );
-
       const dispatchArgs = dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0];
-      await dispatchArgs?.dispatcherOptions?.typingCallbacks?.onReplyStart();
-      expect(context.sendTyping).toHaveBeenCalledTimes(1);
+      // Telegram owns this lifecycle outside core so its independent TTL cannot
+      // stop a still-active channel heartbeat.
+      expect(dispatchArgs?.dispatcherOptions?.typingCallbacks).toBeUndefined();
       expect(vi.getTimerCount()).toBe(1);
 
       await vi.advanceTimersByTimeAsync(3_999);
@@ -128,17 +122,12 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       const sendTyping = vi.fn(async () => undefined);
       await sendTyping();
       const context = createContext({ initialTypingCueAtMs: Date.now(), sendTyping });
-      installTypingPipeline(sendTyping);
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({ context });
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(sendTyping).toHaveBeenCalledTimes(1);
-      expect(vi.getTimerCount()).toBe(1);
-
-      const dispatchArgs = dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0];
-      await dispatchArgs?.dispatcherOptions?.typingCallbacks?.onReplyStart();
       expect(sendTyping).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(1);
 
@@ -164,7 +153,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       const sendTyping = vi.fn(async () => {
         throw new Error("chat action unavailable");
       });
-      installTypingPipeline(sendTyping);
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({ context: createContext({ sendTyping }) });
@@ -188,8 +177,26 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     try {
       const abortController = new AbortController();
       const dispatch = createDeferred<typeof settledDispatchResult>();
-      const sendTyping = vi.fn(async () => undefined);
-      installTypingPipeline(sendTyping);
+      const typingSignals: Array<AbortSignal | undefined> = [];
+      const sendTyping = vi.fn((signal?: AbortSignal) => {
+        typingSignals.push(signal);
+        if (typingSignals.length === 1) {
+          return Promise.resolve();
+        }
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () =>
+              reject(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new DOMException("Aborted", "AbortError"),
+              ),
+            { once: true },
+          );
+        });
+      });
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({
@@ -203,10 +210,13 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       });
       await vi.advanceTimersByTimeAsync(4_000);
       expect(sendTyping).toHaveBeenCalledTimes(2);
+      expect(typingSignals).toHaveLength(2);
+      expect(typingSignals.every((signal) => signal?.aborted === false)).toBe(true);
       expect(vi.getTimerCount()).toBe(1);
 
       abortController.abort(new Error("Gateway interrupted"));
       await vi.advanceTimersByTimeAsync(0);
+      expect(typingSignals.every((signal) => signal?.aborted === true)).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
 
       await vi.advanceTimersByTimeAsync(8_000);
@@ -229,7 +239,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       } as TelegramMessageContext["ctxPayload"];
       const interrupted = createDeferred<typeof settledDispatchResult>();
       const firstSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline(firstSendTyping);
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(interrupted.promise);
 
       const firstProcessing = dispatchWithContext({
@@ -249,7 +259,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
 
       const resumed = createDeferred<typeof settledDispatchResult>();
       const resumedSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline(resumedSendTyping);
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(resumed.promise);
       const resumedProcessing = dispatchWithContext({
         context: createContext({ ctxPayload: sourcePayload, sendTyping: resumedSendTyping }),
@@ -276,8 +286,8 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       const second = createDeferred<typeof settledDispatchResult>();
       const firstSendTyping = vi.fn(async () => undefined);
       const secondSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline(firstSendTyping);
-      installTypingPipeline(secondSendTyping);
+      installTypingPipeline();
+      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher
         .mockReturnValueOnce(first.promise)
         .mockReturnValueOnce(second.promise);

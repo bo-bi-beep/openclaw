@@ -40,6 +40,7 @@ export type TelegramSendChatActionHandler = {
     chatId: number | string,
     action: ChatAction,
     threadParams?: TelegramSendChatActionParams,
+    signal?: AbortSignal,
   ) => Promise<void>;
   isSuspended: () => boolean;
   reset: () => void;

@@ -87,17 +87,26 @@ function buildRecoveredTelegramChatActionSender(params: {
   context: TelegramMessageContext;
   threadId?: number;
   action: "typing" | "record_voice";
-}): () => Promise<void> {
-  return async () => {
+}): (signal?: AbortSignal) => Promise<void> {
+  return async (signal?: AbortSignal) => {
     try {
       await withTelegramApiErrorLogging({
         operation: "sendChatAction",
-        fn: () =>
-          params.context.sendChatActionHandler.sendChatAction(
-            params.context.chatId,
-            params.action,
-            buildTypingThreadParams(params.threadId),
-          ),
+        fn: () => {
+          const threadParams = buildTypingThreadParams(params.threadId);
+          return signal
+            ? params.context.sendChatActionHandler.sendChatAction(
+                params.context.chatId,
+                params.action,
+                threadParams,
+                signal,
+              )
+            : params.context.sendChatActionHandler.sendChatAction(
+                params.context.chatId,
+                params.action,
+                threadParams,
+              );
+        },
       });
     } catch (err) {
       if (params.action !== "record_voice") {

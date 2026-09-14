@@ -71,10 +71,14 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       { inboundEventKind: context.ctxPayload.InboundEventKind },
     );
   const endDeliveryCorrelation = beginDeliveryCorrelation();
+  const typingAbortController = new AbortController();
   let typingStartTimer: ReturnType<typeof setTimeout> | undefined;
   let removeTypingAbortListener: (() => void) | undefined;
   let cleanupTyping: (() => void) | undefined;
   const handleTypingStartError = (err: unknown) => {
+    if (typingAbortController.signal.aborted) {
+      return;
+    }
     logTypingFailure({
       log: logVerbose,
       channel: "telegram",
@@ -92,9 +96,9 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       channel: "telegram",
       accountId: context.route.accountId,
       typing: {
-        start: context.sendTyping,
+        start: () => context.sendTyping(typingAbortController.signal),
         keepaliveIntervalMs: TELEGRAM_CHAT_ACTION_INTERVAL_MS,
-        // ReplyOperation owns terminal cleanup; a per-inbound TTL would kill
+        // This dispatch turn owns terminal cleanup; a fixed TTL would kill
         // feedback while the same long-running task is still active.
         maxDurationMs: 0,
         maxConsecutiveFailures: TELEGRAM_MAX_CONSECUTIVE_TYPING_FAILURES,
@@ -107,6 +111,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
         typingStartTimer = undefined;
       }
       typingCallbacks?.onCleanup?.();
+      typingAbortController.abort();
     };
     const typingAbortSignal = turn.turnAdoptionLifecycle?.abortSignal;
     if (typingAbortSignal) {
@@ -185,17 +190,9 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             >,
           },
           dispatcherOptions: {
+            // The run-scoped Telegram heartbeat above is the sole typing owner.
+            // Passing it into core would add an independent timer and safety TTL.
             ...replyPipeline,
-            ...(typingCallbacks
-              ? {
-                  typingCallbacks: {
-                    ...typingCallbacks,
-                    // The Telegram heartbeat is active or scheduled. Core still
-                    // owns run/idle cleanup, but must not send a duplicate start.
-                    onReplyStart: async () => {},
-                  },
-                }
-              : {}),
             humanDelay: resolveHumanDelayConfig(turn.cfg, context.route.agentId),
             beforeDeliver: async (payload) => payload,
             onBeforeDeliverCancelled: (payload, info) =>
@@ -218,9 +215,6 @@ export async function runTelegramDispatchTurn(turn: Turn) {
                 }
               : undefined,
             sourceReplyDeliveryMode: isRoomEvent ? "message_tool_only" : undefined,
-            // Telegram's four-second callback loop owns renewal for this run.
-            // Disable core's independent cadence to keep exactly one timer.
-            typingKeepalive: false,
             queuedDeliveryCorrelations: isRoomEvent
               ? [{ begin: beginDeliveryCorrelation }]
               : undefined,

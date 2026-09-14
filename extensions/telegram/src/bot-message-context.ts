@@ -110,7 +110,7 @@ export type TelegramMessageContext = {
   groupHistories: BuildTelegramMessageContextParams["groupHistories"];
   route: ReturnType<typeof resolveTelegramConversationRoute>["route"];
   skillFilter: TelegramMessageContextPayload["skillFilter"];
-  sendTyping: () => Promise<void>;
+  sendTyping: (signal?: AbortSignal) => Promise<void>;
   sendRecordVoice: () => Promise<void>;
   sendChatActionHandler: BuildTelegramMessageContextParams["sendChatActionHandler"];
   initialTypingCueAtMs?: number;
@@ -328,18 +328,17 @@ export const buildTelegramMessageContext = async ({
     return null;
   }
 
-  const sendTyping = async () => {
+  const sendTyping = async (signal?: AbortSignal) => {
     if (threadSpec.scope === "direct-messages") {
       return;
     }
+    const threadParams = buildTypingThreadParams(replyThreadId);
     await withTelegramApiErrorLogging({
       operation: "sendChatAction",
       fn: () =>
-        sendChatActionHandler.sendChatAction(
-          chatId,
-          "typing",
-          buildTypingThreadParams(replyThreadId),
-        ),
+        signal
+          ? sendChatActionHandler.sendChatAction(chatId, "typing", threadParams, signal)
+          : sendChatActionHandler.sendChatAction(chatId, "typing", threadParams),
     });
   };
 
