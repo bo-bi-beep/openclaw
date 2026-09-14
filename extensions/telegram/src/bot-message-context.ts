@@ -113,7 +113,7 @@ export type TelegramMessageContext = {
   sendTyping: () => Promise<void>;
   sendRecordVoice: () => Promise<void>;
   sendChatActionHandler: BuildTelegramMessageContextParams["sendChatActionHandler"];
-  initialTypingCueSent?: boolean;
+  initialTypingCueAtMs?: number;
   ackReactionPromise: Promise<boolean> | null;
   reactionApi: TelegramReactionApi | null;
   statusReactionController: TelegramStatusReactionController | null;
@@ -377,7 +377,7 @@ export const buildTelegramMessageContext = async ({
   ) {
     return null;
   }
-  let initialTypingCueSent = false;
+  let initialTypingCueAtMs: number | undefined;
   const ensureConfiguredBindingReady = async (): Promise<boolean> => {
     if (bindingMode.kind !== "configured") {
       return true;
@@ -498,7 +498,7 @@ export const buildTelegramMessageContext = async ({
   // Send the first typing cue before expensive context/session construction,
   // but only after intake has accepted the message as a non-room-event turn.
   if (bodyResult.inboundEventKind !== "room_event") {
-    initialTypingCueSent = true;
+    initialTypingCueAtMs = Date.now();
     void sendTyping().catch((err: unknown) => {
       logVerbose(`telegram early typing cue failed for chat ${chatId}: ${String(err)}`);
     });
@@ -682,7 +682,7 @@ export const buildTelegramMessageContext = async ({
     sendTyping,
     sendRecordVoice,
     sendChatActionHandler,
-    initialTypingCueSent,
+    initialTypingCueAtMs,
     ackReactionPromise,
     reactionApi,
     statusReactionController,

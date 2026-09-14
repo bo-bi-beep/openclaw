@@ -42,6 +42,24 @@ Preconditions:
 - **Confirm finalization.** Match progress edits by `botApiMessageId`. Its last
   revision is the activity receipt. Require no `delete` event on this happy path.
 
+- **Prove the foreground typing heartbeat.** Run a private turn whose tool call
+  outlives Telegram's five-second typing window:
+
+  ```bash
+  mkdir -p "$TELEGRAM_E2E_PROOF_DIR/typing-heartbeat"
+  node "$TELEGRAM_E2E_SKILL_DIR/scripts/run-mock-sut-user-e2e.mjs" \
+    --backend qa-mock --dm --timeout-ms 30000 \
+    --text 'Tool progress QA check: call the exec tool exactly once with this exact command before answering: `sleep 7; printf "telegram-typing-heartbeat\\n"`. After that command completes, reply exactly `TELEGRAM_TYPING_HEARTBEAT_OK`.' \
+    --record "$TELEGRAM_E2E_PROOF_DIR/typing-heartbeat/events.ndjson" \
+    --output "$TELEGRAM_E2E_PROOF_DIR/typing-heartbeat/summary.json"
+  ```
+
+  Require two provider requests and a final SUT message containing
+  `TELEGRAM_TYPING_HEARTBEAT_OK`. Between the sent action and that final, require
+  repeated SUT `typing` rows with `action: "chatActionTyping"` across the full
+  seven-second tool wait and no consecutive typing gap of five seconds or more.
+  Require `chatActionCancel` at final delivery and no later SUT typing row.
+
 ## Gotchas
 
 - Older checkouts can collapse the Responses preamble into one final answer; the recipe pins the completions fixture for that reason.

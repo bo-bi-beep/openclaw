@@ -70,7 +70,7 @@ const buildModelsProviderDataHoisted = vi.hoisted(() =>
 );
 const listSkillCommandsForAgentsHoisted = vi.hoisted(() => vi.fn(() => []));
 const createChannelMessageReplyPipelineHoisted = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn<NonNullable<TelegramBotDeps["createChannelMessageReplyPipeline"]>>(() => ({
     responsePrefix: undefined,
     responsePrefixContextProvider: () => ({ identityName: undefined }),
     resolveResponsePrefix: () => undefined,
