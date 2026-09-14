@@ -123,6 +123,7 @@ function createRecordingTelegramApi(state: TelegramTraceWireState): Bot["api"] {
       chatId: number | string,
       action: string,
       params?: Record<string, unknown>,
+      _signal?: AbortSignal,
     ): Promise<true> => {
       state.recordWireCall({
         method: "sendChatAction",
@@ -210,10 +211,14 @@ async function setupTelegramTrace(recorder: WireRecorder) {
   const api = createRecordingTelegramApi(state);
   const chatActions = createTelegramSendChatActionHandler({ logger: () => {} });
   const sendChatActionHandler: TelegramSendChatActionHandler = {
-    sendChatAction: (chatId, action, threadParams) =>
-      chatActions.sendChatAction(chatId, action, threadParams, () =>
-        api.sendChatAction(chatId, action, threadParams),
-      ),
+    sendChatAction: (chatId, action, threadParams, signal) =>
+      chatActions.sendChatAction(chatId, action, threadParams, () => {
+        if (!signal) {
+          return api.sendChatAction(chatId, action, threadParams);
+        }
+        const telegramSignal = signal as Parameters<typeof api.sendChatAction>[3];
+        return api.sendChatAction(chatId, action, threadParams, telegramSignal);
+      }),
     isSuspended: chatActions.isSuspended,
     reset: chatActions.reset,
   };

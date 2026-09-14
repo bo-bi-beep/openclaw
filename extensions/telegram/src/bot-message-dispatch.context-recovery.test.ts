@@ -385,9 +385,12 @@ describeTelegramDispatch("dispatchTelegramMessage context-recovery", () => {
     const typing = expectRecordFields(pipelineArgs.typing, {});
     expect(typing.maxConsecutiveFailures).toBe(5);
     await (typing.start as () => Promise<void>)();
-    expect(sendChatAction).toHaveBeenCalledWith(-1003774691294, "typing", {
-      message_thread_id: 3731,
-    });
+    expect(sendChatAction).toHaveBeenCalledWith(
+      -1003774691294,
+      "typing",
+      { message_thread_id: 3731 },
+      expect.any(AbortSignal),
+    );
     expect(deliverReplies).not.toHaveBeenCalled();
   });
 

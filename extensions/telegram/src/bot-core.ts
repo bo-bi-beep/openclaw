@@ -168,10 +168,16 @@ export function createTelegramBotCore(
   const accountThrottler = getOrCreateAccountThrottler(opts.token, botRuntime.apiThrottler);
   bot.api.config.use(accountThrottler.transformer);
   const sendChatActionHandler: TelegramSendChatActionHandler = {
-    sendChatAction: (chatId, action, threadParams) =>
-      accountThrottler.chatActions.sendChatAction(chatId, action, threadParams, () =>
-        bot.api.sendChatAction(chatId, action, threadParams),
-      ),
+    sendChatAction: (chatId, action, threadParams, signal) =>
+      accountThrottler.chatActions.sendChatAction(chatId, action, threadParams, () => {
+        if (!signal) {
+          return bot.api.sendChatAction(chatId, action, threadParams);
+        }
+        // grammY ships a compatible AbortSignal runtime with a structurally
+        // distinct declaration, so keep the cast at this dependency boundary.
+        const telegramSignal = signal as Parameters<typeof bot.api.sendChatAction>[3];
+        return bot.api.sendChatAction(chatId, action, threadParams, telegramSignal);
+      }),
     isSuspended: accountThrottler.chatActions.isSuspended,
     reset: accountThrottler.chatActions.reset,
   };
