@@ -116,7 +116,7 @@ describe("buildTelegramMessageContext typing", () => {
     });
 
     expect(ctx?.ctxPayload.InboundEventKind).toBe("user_request");
-    expect(ctx?.initialTypingCueSent).toBe(true);
+    expect(ctx?.initialTypingCueAtMs).toEqual(expect.any(Number));
     expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(-1001234567890, "typing", {
       message_thread_id: 99,
     });
@@ -145,7 +145,7 @@ describe("buildTelegramMessageContext typing", () => {
     });
 
     expect(ctx?.ctxPayload.InboundEventKind).toBe("room_event");
-    expect(ctx?.initialTypingCueSent).toBe(false);
+    expect(ctx?.initialTypingCueAtMs).toBeUndefined();
     expect(sendChatActionHandler.sendChatAction).not.toHaveBeenCalled();
   });
 

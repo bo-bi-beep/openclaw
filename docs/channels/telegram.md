@@ -349,6 +349,7 @@ curl "https://api.telegram.org/bot<bot_token>/getUpdates"
 - DM messages can carry `message_thread_id`; OpenClaw preserves it for replies. DM topic sessions split only when Telegram `getMe` reports `has_topics_enabled: true` for the bot; otherwise DMs stay on the flat session.
 - Long polling uses the grammY runner with per-chat/per-thread sequencing. Runner sink concurrency uses `agents.defaults.maxConcurrent`.
 - Multi-account startup bounds concurrent `getMe` probes so large bot fleets do not fan out every account probe at once.
+- Accepted user-request turns refresh Telegram's `typing` action every four seconds while foreground dispatch is active, including model, tool, retry, and queue waits. The account/chat/topic-scoped refresh stops when the turn settles or is canceled or interrupted; Telegram then clears it when the reply arrives or the last action expires (normally within about five seconds). Detached work does not keep foreground typing alive: inspect its durable status with [`/tasks`](/automation/tasks) or [`openclaw tasks`](/cli/tasks).
 - Each gateway process guards long polling so only one active poller can use a bot token at a time. Persistent `getUpdates` 409 conflicts point to another OpenClaw gateway, script, or external poller using the same token.
 - The polling watchdog restarts after 120 seconds without completed `getUpdates` liveness.
 - Telegram Bot API has no read-receipt support (`sendReadReceipts` does not apply).
