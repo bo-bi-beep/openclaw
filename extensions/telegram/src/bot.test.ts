@@ -731,6 +731,7 @@ function createDirectDispatchContext(cfg: OpenClawConfig): TelegramDispatchParam
       isSuspended: () => false,
       reset: vi.fn(),
     },
+    typingAbortController: new AbortController(),
     ackReactionPromise: null,
     reactionApi: null,
     statusReactionController: null,

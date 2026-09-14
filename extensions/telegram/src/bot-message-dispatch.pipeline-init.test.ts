@@ -146,6 +146,50 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     }
   });
 
+  it("cancels an in-flight eager typing cue when its turn settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const dispatch = createDeferred<typeof settledDispatchResult>();
+      const typingAbortController = new AbortController();
+      const typingSignals: Array<AbortSignal | undefined> = [];
+      const sendTyping = vi.fn((signal?: AbortSignal) => {
+        typingSignals.push(signal);
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      });
+      const eagerTyping = sendTyping(typingAbortController.signal).catch(() => undefined);
+      const context = createContext({
+        initialTypingCueAtMs: Date.now(),
+        sendTyping,
+        typingAbortController,
+      });
+      installTypingPipeline();
+      dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
+
+      const processing = dispatchWithContext({ context });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sendTyping).toHaveBeenCalledTimes(1);
+      expect(typingSignals).toEqual([typingAbortController.signal]);
+
+      dispatch.resolve(settledDispatchResult);
+      await expect(processing).resolves.toEqual({ kind: "completed" });
+      await eagerTyping;
+
+      expect(typingAbortController.signal.aborted).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendTyping).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("stops retrying a failed Telegram chat-action transport", async () => {
     vi.useFakeTimers();
     try {
@@ -343,19 +387,17 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       throw new Error("pipeline initialization failed");
     });
 
-    await dispatchWithContext({
-      context: createContext({
-        ctxPayload: {
-          SessionKey: sessionKey,
-          ChatType: "direct",
-        } as TelegramMessageContext["ctxPayload"],
-        statusReactionController: statusReactionController as never,
-        reactionApi,
-      }),
-      runtime,
-      suppressFailureFallback: true,
+    const context = createContext({
+      ctxPayload: {
+        SessionKey: sessionKey,
+        ChatType: "direct",
+      } as TelegramMessageContext["ctxPayload"],
+      statusReactionController: statusReactionController as never,
+      reactionApi,
     });
+    await dispatchWithContext({ context, runtime, suppressFailureFallback: true });
 
+    expect(context.typingAbortController.signal.aborted).toBe(true);
     await vi.waitFor(() => {
       expect(statusReactionController.restoreInitial).toHaveBeenCalled();
     });

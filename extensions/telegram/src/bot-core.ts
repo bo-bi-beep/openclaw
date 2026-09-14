@@ -173,8 +173,8 @@ export function createTelegramBotCore(
         if (!signal) {
           return bot.api.sendChatAction(chatId, action, threadParams);
         }
-        // grammY ships a compatible AbortSignal runtime with a structurally
-        // distinct declaration, so keep the cast at this dependency boundary.
+        // grammY exposes a structurally distinct declaration at this dependency boundary.
+        // SAFETY: Both declarations implement the same AbortSignal runtime contract.
         const telegramSignal = signal as Parameters<typeof bot.api.sendChatAction>[3];
         return bot.api.sendChatAction(chatId, action, threadParams, telegramSignal);
       }),

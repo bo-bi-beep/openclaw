@@ -11,7 +11,7 @@ function requireInvocationOrder(mock: { invocationCallOrder: number[] }, context
 }
 
 function createSendChatActionHandler(
-  sendChatAction = vi.fn(async () => undefined),
+  sendChatAction = vi.fn<TelegramSendChatActionHandler["sendChatAction"]>(async () => undefined),
 ): TelegramSendChatActionHandler & { sendChatAction: typeof sendChatAction } {
   return {
     sendChatAction,
@@ -43,10 +43,52 @@ describe("buildTelegramMessageContext typing", () => {
       }),
     ).resolves.not.toBeNull();
 
-    expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(42, "typing", undefined);
+    expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(
+      42,
+      "typing",
+      undefined,
+      expect.any(AbortSignal),
+    );
     expect(
       requireInvocationOrder(sendChatActionHandler.sendChatAction.mock, "send typing invocation"),
     ).toBeLessThan(requireInvocationOrder(buildInboundContext.mock, "inbound context invocation"));
+  });
+
+  it("aborts an in-flight early cue when session context construction fails", async () => {
+    let typingSignal: AbortSignal | undefined;
+    const sendChatAction = vi.fn<TelegramSendChatActionHandler["sendChatAction"]>(
+      async (_chatId, _action, _threadParams, signal) => {
+        typingSignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    const sendChatActionHandler = createSendChatActionHandler(sendChatAction);
+    const contextError = new Error("context construction failed");
+
+    await expect(
+      buildTelegramMessageContextForTest({
+        message: {
+          chat: { id: 42, type: "private", first_name: "Pat" },
+          from: { id: 42, first_name: "Pat" },
+          text: "hello",
+        },
+        sendChatActionHandler,
+        sessionRuntime: {
+          buildChannelInboundEventContext: vi.fn(() => {
+            throw contextError;
+          }),
+        },
+      }),
+    ).rejects.toBe(contextError);
+
+    expect(typingSignal).toBeInstanceOf(AbortSignal);
+    expect(typingSignal?.aborted).toBe(true);
   });
 
   it("does not send direct typing when there is no replyable body", async () => {
@@ -117,9 +159,12 @@ describe("buildTelegramMessageContext typing", () => {
 
     expect(ctx?.ctxPayload.InboundEventKind).toBe("user_request");
     expect(ctx?.initialTypingCueAtMs).toEqual(expect.any(Number));
-    expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(-1001234567890, "typing", {
-      message_thread_id: 99,
-    });
+    expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(
+      -1001234567890,
+      "typing",
+      { message_thread_id: 99 },
+      expect.any(AbortSignal),
+    );
     expect(
       requireInvocationOrder(sendChatActionHandler.sendChatAction.mock, "send typing invocation"),
     ).toBeLessThan(requireInvocationOrder(buildInboundContext.mock, "inbound context invocation"));

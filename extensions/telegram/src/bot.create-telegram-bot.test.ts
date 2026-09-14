@@ -3054,7 +3054,12 @@ describe("createTelegramBot", () => {
       me: { username: "openclaw_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
-    expect(sendChatActionSpy).toHaveBeenCalledWith(42, "typing", undefined);
+    expect(sendChatActionSpy).toHaveBeenCalledWith(
+      42,
+      "typing",
+      undefined,
+      expect.any(AbortSignal),
+    );
   });
 
   it("dedupes duplicate updates for callback_query, message, and channel_post", async () => {
