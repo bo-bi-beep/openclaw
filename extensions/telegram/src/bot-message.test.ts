@@ -179,6 +179,7 @@ describe("telegram bot message processor", () => {
       primaryCtx: { me: { username: "openclaw_bot" } },
       route: { sessionKey: "agent:main:main" },
       sendTyping: vi.fn().mockResolvedValue(undefined),
+      typingAbortController: new AbortController(),
       ...context,
     };
   }
@@ -264,6 +265,22 @@ describe("telegram bot message processor", () => {
     expect(requireInvocationOrder(onDispatchStart.mock, "dispatch-start invocation")).toBeLessThan(
       requireInvocationOrder(dispatchTelegramMessage.mock, "message dispatch invocation"),
     );
+  });
+
+  it("aborts the eager typing cue when dispatch-start setup fails", async () => {
+    const typingAbortController = new AbortController();
+    const onDispatchStart = vi.fn(async () => {
+      throw new Error("dispatch-start failed");
+    });
+    buildTelegramMessageContext.mockResolvedValue(createMessageContext({ typingAbortController }));
+
+    const processMessage = createTelegramMessageProcessor(baseDeps);
+    await expect(processSampleMessage(processMessage, { onDispatchStart })).rejects.toThrow(
+      "dispatch-start failed",
+    );
+
+    expect(typingAbortController.signal.aborted).toBe(true);
+    expect(dispatchTelegramMessage).not.toHaveBeenCalled();
   });
 
   it("does not run the dispatch-start lifecycle when no context is produced", async () => {

@@ -113,6 +113,8 @@ export type TelegramMessageContext = {
   sendTyping: (signal?: AbortSignal) => Promise<void>;
   sendRecordVoice: () => Promise<void>;
   sendChatActionHandler: BuildTelegramMessageContextParams["sendChatActionHandler"];
+  /** Shared cancellation owner for the eager cue and dispatch heartbeat. */
+  typingAbortController: AbortController;
   initialTypingCueAtMs?: number;
   ackReactionPromise: Promise<boolean> | null;
   reactionApi: TelegramReactionApi | null;
@@ -328,6 +330,7 @@ export const buildTelegramMessageContext = async ({
     return null;
   }
 
+  const typingAbortController = new AbortController();
   const sendTyping = async (signal?: AbortSignal) => {
     if (threadSpec.scope === "direct-messages") {
       return;
@@ -498,8 +501,10 @@ export const buildTelegramMessageContext = async ({
   // but only after intake has accepted the message as a non-room-event turn.
   if (bodyResult.inboundEventKind !== "room_event") {
     initialTypingCueAtMs = Date.now();
-    void sendTyping().catch((err: unknown) => {
-      logVerbose(`telegram early typing cue failed for chat ${chatId}: ${String(err)}`);
+    void sendTyping(typingAbortController.signal).catch((err: unknown) => {
+      if (!typingAbortController.signal.aborted) {
+        logVerbose(`telegram early typing cue failed for chat ${chatId}: ${String(err)}`);
+      }
     });
   }
 
@@ -544,6 +549,9 @@ export const buildTelegramMessageContext = async ({
     commandAuthorized: bodyResult.commandAuthorized,
     topicName,
     sessionRuntime,
+  }).catch((err: unknown) => {
+    typingAbortController.abort();
+    throw err;
   });
   const isRoomEvent = ctxPayload.InboundEventKind === "room_event";
   const canShowStatusReaction = !isRoomEvent;
@@ -681,6 +689,7 @@ export const buildTelegramMessageContext = async ({
     sendTyping,
     sendRecordVoice,
     sendChatActionHandler,
+    typingAbortController,
     initialTypingCueAtMs,
     ackReactionPromise,
     reactionApi,

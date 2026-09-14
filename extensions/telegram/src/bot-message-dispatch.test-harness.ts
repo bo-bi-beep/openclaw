@@ -591,6 +591,7 @@ export function createContext(overrides?: Partial<TelegramMessageContext>): Tele
     sendTyping: vi.fn(),
     sendRecordVoice: vi.fn(),
     sendChatActionHandler: { sendChatAction: vi.fn(async () => undefined) },
+    typingAbortController: new AbortController(),
     ackReactionPromise: null,
     reactionApi: null,
   } as unknown as TelegramMessageContext;

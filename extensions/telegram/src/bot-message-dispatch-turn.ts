@@ -71,10 +71,10 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       { inboundEventKind: context.ctxPayload.InboundEventKind },
     );
   const endDeliveryCorrelation = beginDeliveryCorrelation();
-  const typingAbortController = new AbortController();
+  const { typingAbortController } = context;
   let typingStartTimer: ReturnType<typeof setTimeout> | undefined;
   let removeTypingAbortListener: (() => void) | undefined;
-  let cleanupTyping: (() => void) | undefined;
+  let cleanupTyping = () => typingAbortController.abort();
   const handleTypingStartError = (err: unknown) => {
     if (typingAbortController.signal.aborted) {
       return;
@@ -115,7 +115,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
     };
     const typingAbortSignal = turn.turnAdoptionLifecycle?.abortSignal;
     if (typingAbortSignal) {
-      const abortTyping = () => cleanupTyping?.();
+      const abortTyping = () => cleanupTyping();
       typingAbortSignal.addEventListener("abort", abortTyping, { once: true });
       removeTypingAbortListener = () => typingAbortSignal.removeEventListener("abort", abortTyping);
       if (typingAbortSignal.aborted) {
@@ -381,7 +381,7 @@ export async function runTelegramDispatchTurn(turn: Turn) {
   } finally {
     try {
       removeTypingAbortListener?.();
-      cleanupTyping?.();
+      cleanupTyping();
     } finally {
       endDeliveryCorrelation();
     }

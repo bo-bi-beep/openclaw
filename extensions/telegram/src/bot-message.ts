@@ -252,8 +252,10 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       context.initialTypingCueAtMs === undefined
     ) {
       context.initialTypingCueAtMs = Date.now();
-      void context.sendTyping().catch((err: unknown) => {
-        logVerbose(`telegram early typing cue failed for chat ${context.chatId}: ${String(err)}`);
+      void context.sendTyping(context.typingAbortController.signal).catch((err: unknown) => {
+        if (!context.typingAbortController.signal.aborted) {
+          logVerbose(`telegram early typing cue failed for chat ${context.chatId}: ${String(err)}`);
+        }
       });
     }
     telegramInboundLog.info(
@@ -270,7 +272,12 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
     const spooledReplay =
       options?.spooledReplay === true || isTelegramSpooledReplayUpdate(primaryCtx.update);
     if (!spooledReplay) {
-      await turnContext.onDispatchStart?.();
+      try {
+        await turnContext.onDispatchStart?.();
+      } catch (err) {
+        context.typingAbortController.abort();
+        throw err;
+      }
     }
     const runTelegramDispatch = async (params: {
       turnAdoptionLifecycle?: {
