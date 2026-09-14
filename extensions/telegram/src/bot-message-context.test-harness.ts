@@ -39,6 +39,7 @@ type BuildTelegramMessageContextForTestParams = {
   sendChatActionHandler?: BuildTelegramMessageContextParams["sendChatActionHandler"];
   runtime?: BuildTelegramMessageContextParams["runtime"];
   sessionRuntime?: BuildTelegramMessageContextParams["sessionRuntime"] | null;
+  typingAbortSignal?: AbortSignal;
   resolveGroupActivation?: BuildTelegramMessageContextParams["resolveGroupActivation"];
   resolveGroupRequireMention?: BuildTelegramMessageContextParams["resolveGroupRequireMention"];
   resolveTelegramGroupConfig?: BuildTelegramMessageContextParams["resolveTelegramGroupConfig"];
@@ -147,6 +148,7 @@ export async function buildTelegramMessageContextForTest(
       ...params.runtime,
     },
     sessionRuntime,
+    typingAbortSignal: params.typingAbortSignal,
     account: { accountId: params.accountId ?? "default" } as never,
     historyLimit: params.historyLimit ?? 0,
     dmHistoryLimit: params.dmHistoryLimit ?? 10,

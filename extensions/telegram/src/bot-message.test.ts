@@ -185,21 +185,12 @@ describe("telegram bot message processor", () => {
   }
 
   it("dispatches when context is available", async () => {
-    const sendTyping = vi.fn().mockResolvedValue(undefined);
-    buildTelegramMessageContext.mockResolvedValue(
-      createMessageContext({
-        sendTyping,
-      }),
-    );
+    buildTelegramMessageContext.mockResolvedValue(createMessageContext());
 
     const processMessage = createTelegramMessageProcessor(baseDeps);
     await expect(processSampleMessage(processMessage)).resolves.toEqual({ kind: "completed" });
 
-    expect(sendTyping).toHaveBeenCalledTimes(1);
     expect(dispatchTelegramMessage).toHaveBeenCalledTimes(1);
-    expect(requireInvocationOrder(sendTyping.mock, "send typing invocation")).toBeLessThan(
-      requireInvocationOrder(dispatchTelegramMessage.mock, "message dispatch invocation"),
-    );
     expect(telegramInboundInfo).toHaveBeenCalledWith(
       "Inbound message telegram:123 -> @openclaw_bot (direct, 11 chars)",
     );
@@ -243,42 +234,40 @@ describe("telegram bot message processor", () => {
   });
 
   it("runs the dispatch-start lifecycle after context creation and before dispatch", async () => {
-    const sendTyping = vi.fn().mockResolvedValue(undefined);
     const onDispatchStart = vi.fn(async () => undefined);
-    buildTelegramMessageContext.mockResolvedValue(
-      createMessageContext({
-        sendTyping,
-      }),
-    );
+    buildTelegramMessageContext.mockResolvedValue(createMessageContext());
 
     const processMessage = createTelegramMessageProcessor(baseDeps);
     await expect(processSampleMessage(processMessage, { onDispatchStart })).resolves.toEqual({
       kind: "completed",
     });
 
-    expect(sendTyping).toHaveBeenCalledTimes(1);
     expect(onDispatchStart).toHaveBeenCalledTimes(1);
     expect(dispatchTelegramMessage).toHaveBeenCalledTimes(1);
-    expect(requireInvocationOrder(sendTyping.mock, "send typing invocation")).toBeLessThan(
-      requireInvocationOrder(onDispatchStart.mock, "dispatch-start invocation"),
-    );
     expect(requireInvocationOrder(onDispatchStart.mock, "dispatch-start invocation")).toBeLessThan(
       requireInvocationOrder(dispatchTelegramMessage.mock, "message dispatch invocation"),
     );
   });
 
-  it("aborts the eager typing cue when dispatch-start setup fails", async () => {
+  it("cleans up the typing heartbeat when dispatch-start setup fails", async () => {
     const typingAbortController = new AbortController();
+    const cleanupTyping = vi.fn();
     const onDispatchStart = vi.fn(async () => {
       throw new Error("dispatch-start failed");
     });
-    buildTelegramMessageContext.mockResolvedValue(createMessageContext({ typingAbortController }));
+    buildTelegramMessageContext.mockResolvedValue(
+      createMessageContext({
+        typingAbortController,
+        typingHeartbeat: { cleanup: cleanupTyping },
+      }),
+    );
 
     const processMessage = createTelegramMessageProcessor(baseDeps);
     await expect(processSampleMessage(processMessage, { onDispatchStart })).rejects.toThrow(
       "dispatch-start failed",
     );
 
+    expect(cleanupTyping).toHaveBeenCalledOnce();
     expect(typingAbortController.signal.aborted).toBe(true);
     expect(dispatchTelegramMessage).not.toHaveBeenCalled();
   });
@@ -350,21 +339,6 @@ describe("telegram bot message processor", () => {
     );
   });
 
-  it("keeps dispatch running when the early typing cue fails", async () => {
-    const sendTyping = vi.fn().mockRejectedValue(new Error("typing failed"));
-    buildTelegramMessageContext.mockResolvedValue(
-      createMessageContext({
-        sendTyping,
-      }),
-    );
-
-    const processMessage = createTelegramMessageProcessor(baseDeps);
-    await expect(processSampleMessage(processMessage)).resolves.toEqual({ kind: "completed" });
-
-    expect(sendTyping).toHaveBeenCalledTimes(1);
-    expect(dispatchTelegramMessage).toHaveBeenCalledTimes(1);
-  });
-
   it("sends user-visible fallback when dispatch throws", async () => {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     const { processMessage, runtimeError, dispatchError } = createDispatchFailureHarness(
@@ -417,6 +391,52 @@ describe("telegram bot message processor", () => {
     expect(runtimeError).toHaveBeenCalledWith(
       "telegram message processing failed: Error: dispatch exploded",
     );
+  });
+
+  it("includes ambient replay-participant cancellation while context construction is pending", async () => {
+    let releaseContext!: () => void;
+    let markContextStarted!: () => void;
+    const contextPending = new Promise<void>((resolve) => {
+      releaseContext = resolve;
+    });
+    const contextStarted = new Promise<void>((resolve) => {
+      markContextStarted = resolve;
+    });
+    let typingAbortSignal: AbortSignal | undefined;
+    buildTelegramMessageContext.mockImplementationOnce(async (params) => {
+      typingAbortSignal = params.typingAbortSignal;
+      markContextStarted();
+      await contextPending;
+      return null;
+    });
+    const processMessage = createTelegramMessageProcessor(baseDeps);
+    const update = { update_id: 123457 };
+    const ownerError = new Error("replay owner cancelled");
+
+    const replay = await runWithTelegramSpooledReplayUpdate(update, async () => {
+      const participant = createTelegramSpooledReplayDeferredParticipant(
+        "test:context-construction-cancel",
+      );
+      if (!participant) {
+        throw new Error("expected spooled replay participant");
+      }
+      const processing = processSampleMessage(processMessage, {}, { update });
+      await contextStarted;
+
+      expect(typingAbortSignal?.aborted).toBe(false);
+      participant.settle({ kind: "failed-retryable", error: ownerError });
+      expect(typingAbortSignal?.aborted).toBe(true);
+      expect(typingAbortSignal?.reason).toBe(ownerError);
+
+      releaseContext();
+      return await processing;
+    });
+
+    expect(replay.value).toEqual({ kind: "skipped" });
+    await expect(replay.deferredWork?.task).resolves.toEqual({
+      kind: "failed-retryable",
+      error: ownerError,
+    });
   });
 
   it("finalizes spooled adoption before settling the ingress participant", async () => {

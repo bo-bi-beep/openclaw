@@ -28,21 +28,20 @@ describe("buildTelegramMessageContext typing", () => {
     );
     const sendChatActionHandler = createSendChatActionHandler();
 
-    await expect(
-      buildTelegramMessageContextForTest({
-        message: {
-          chat: { id: 42, type: "private", first_name: "Pat" },
-          from: { id: 42, first_name: "Pat" },
-          text: "hello",
-        },
-        sendChatActionHandler,
-        sessionRuntime: {
-          buildChannelInboundEventContext:
-            buildInboundContext as unknown as typeof buildChannelInboundEventContext,
-        },
-      }),
-    ).resolves.not.toBeNull();
+    const context = await buildTelegramMessageContextForTest({
+      message: {
+        chat: { id: 42, type: "private", first_name: "Pat" },
+        from: { id: 42, first_name: "Pat" },
+        text: "hello",
+      },
+      sendChatActionHandler,
+      sessionRuntime: {
+        buildChannelInboundEventContext:
+          buildInboundContext as unknown as typeof buildChannelInboundEventContext,
+      },
+    });
 
+    expect(context).not.toBeNull();
     expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(
       42,
       "typing",
@@ -52,6 +51,86 @@ describe("buildTelegramMessageContext typing", () => {
     expect(
       requireInvocationOrder(sendChatActionHandler.sendChatAction.mock, "send typing invocation"),
     ).toBeLessThan(requireInvocationOrder(buildInboundContext.mock, "inbound context invocation"));
+    context?.typingHeartbeat?.cleanup();
+  });
+
+  it("refreshes typing while inbound context resolution is pending", async () => {
+    vi.useFakeTimers();
+    let releaseIngress!: () => void;
+    const ingressPending = new Promise<void>((resolve) => {
+      releaseIngress = resolve;
+    });
+    const resolveChannelIngress = vi.fn<TelegramChannelIngressResolver>(async () => {
+      await ingressPending;
+      return {} as never;
+    });
+    const sendChatActionHandler = createSendChatActionHandler();
+    const contextPromise = buildTelegramMessageContextForTest({
+      message: {
+        chat: { id: 42, type: "private", first_name: "Pat" },
+        from: { id: 42, first_name: "Pat" },
+        text: "hello",
+      },
+      options: { channelIngressResolvers: [resolveChannelIngress] },
+      sendChatActionHandler,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolveChannelIngress).toHaveBeenCalledOnce();
+      expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseIngress();
+      const context = await contextPromise;
+      context?.typingHeartbeat?.cleanup();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops refreshing while session context construction is pending when its owner aborts", async () => {
+    vi.useFakeTimers();
+    let releaseIngress!: () => void;
+    const ingressPending = new Promise<void>((resolve) => {
+      releaseIngress = resolve;
+    });
+    const ownerAbortController = new AbortController();
+    const resolveChannelIngress = vi.fn<TelegramChannelIngressResolver>(async () => {
+      await ingressPending;
+      return {} as never;
+    });
+    const sendChatActionHandler = createSendChatActionHandler();
+    const contextPromise = buildTelegramMessageContextForTest({
+      message: {
+        chat: { id: 42, type: "private", first_name: "Pat" },
+        from: { id: 42, first_name: "Pat" },
+        text: "hello",
+      },
+      options: { channelIngressResolvers: [resolveChannelIngress] },
+      sendChatActionHandler,
+      typingAbortSignal: ownerAbortController.signal,
+    });
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      ownerAbortController.abort(new Error("Gateway interrupted"));
+      await vi.advanceTimersByTimeAsync(8_000);
+
+      expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      releaseIngress();
+      const context = await contextPromise;
+      context?.typingHeartbeat?.cleanup();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("aborts an in-flight early cue when session context construction fails", async () => {
@@ -158,7 +237,7 @@ describe("buildTelegramMessageContext typing", () => {
     });
 
     expect(ctx?.ctxPayload.InboundEventKind).toBe("user_request");
-    expect(ctx?.initialTypingCueAtMs).toEqual(expect.any(Number));
+    expect(ctx?.typingHeartbeat).toBeDefined();
     expect(sendChatActionHandler.sendChatAction).toHaveBeenCalledWith(
       -1001234567890,
       "typing",
@@ -168,6 +247,30 @@ describe("buildTelegramMessageContext typing", () => {
     expect(
       requireInvocationOrder(sendChatActionHandler.sendChatAction.mock, "send typing invocation"),
     ).toBeLessThan(requireInvocationOrder(buildInboundContext.mock, "inbound context invocation"));
+    ctx?.typingHeartbeat?.cleanup();
+  });
+
+  it("waits for dispatch recovery before typing into a forum with no explicit topic", async () => {
+    const sendChatActionHandler = createSendChatActionHandler();
+
+    const ctx = await buildTelegramMessageContextForTest({
+      message: {
+        chat: { id: -1001234567890, type: "supergroup", title: "Forum", is_forum: true },
+        from: { id: 42, first_name: "Pat" },
+        text: "hello recovered topic",
+      },
+      resolveGroupRequireMention: () => false,
+      resolveTelegramGroupConfig: () => ({
+        groupConfig: { requireMention: false },
+        topicConfig: undefined,
+      }),
+      sendChatActionHandler,
+    });
+
+    expect(ctx?.ctxPayload.InboundEventKind).toBe("user_request");
+    expect(ctx?.typingHeartbeat).toBeDefined();
+    expect(sendChatActionHandler.sendChatAction).not.toHaveBeenCalled();
+    ctx?.typingHeartbeat?.cleanup();
   });
 
   it("does not send forum topic typing for room events", async () => {
@@ -190,7 +293,7 @@ describe("buildTelegramMessageContext typing", () => {
     });
 
     expect(ctx?.ctxPayload.InboundEventKind).toBe("room_event");
-    expect(ctx?.initialTypingCueAtMs).toBeUndefined();
+    expect(ctx?.typingHeartbeat).toBeUndefined();
     expect(sendChatActionHandler.sendChatAction).not.toHaveBeenCalled();
   });
 

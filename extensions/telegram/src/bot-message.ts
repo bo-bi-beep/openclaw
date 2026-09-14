@@ -201,6 +201,22 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       }
       recordTelegramMessageProcessingResult(result);
     };
+    const spooledReplay =
+      options?.spooledReplay === true || isTelegramSpooledReplayUpdate(primaryCtx.update);
+    const ambientSpooledReplayParticipant =
+      spooledReplay &&
+      !options?.isolateSpooledReplaySettlement &&
+      !turnContext.spooledReplayParticipant
+        ? getTelegramSpooledReplayDeferredParticipant()
+        : undefined;
+    const typingAbortSignals = [
+      turnContext.spooledReplayAbortSignal,
+      turnContext.spooledReplayParticipant?.abortSignal,
+      ambientSpooledReplayParticipant?.abortSignal,
+      getTelegramSpooledReplayLifecycle()?.abortSignal,
+    ].filter((signal): signal is AbortSignal => signal !== undefined);
+    const typingAbortSignal =
+      typingAbortSignals.length > 0 ? AbortSignal.any(typingAbortSignals) : undefined;
     const context = await buildTelegramMessageContext({
       primaryCtx,
       allMedia,
@@ -227,6 +243,7 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
       sendChatActionHandler,
       runtime: contextRuntime,
       sessionRuntime,
+      typingAbortSignal,
       upsertPairingRequest: telegramDeps.upsertChannelPairingRequest,
     });
     if (!context) {
@@ -247,17 +264,6 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
           (options?.ingressBuffer ? ` buffer=${options.ingressBuffer}` : ""),
       );
     }
-    if (
-      context.ctxPayload.InboundEventKind !== "room_event" &&
-      context.initialTypingCueAtMs === undefined
-    ) {
-      context.initialTypingCueAtMs = Date.now();
-      void context.sendTyping(context.typingAbortController.signal).catch((err: unknown) => {
-        if (!context.typingAbortController.signal.aborted) {
-          logVerbose(`telegram early typing cue failed for chat ${context.chatId}: ${String(err)}`);
-        }
-      });
-    }
     telegramInboundLog.info(
       formatTelegramInboundLogLine({
         from: context.ctxPayload.From,
@@ -269,12 +275,11 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
         mediaType: allMedia[0]?.contentType ?? allMedia[0]?.kind,
       }),
     );
-    const spooledReplay =
-      options?.spooledReplay === true || isTelegramSpooledReplayUpdate(primaryCtx.update);
     if (!spooledReplay) {
       try {
         await turnContext.onDispatchStart?.();
       } catch (err) {
+        context.typingHeartbeat?.cleanup();
         context.typingAbortController.abort();
         throw err;
       }
@@ -347,10 +352,7 @@ export const createTelegramMessageProcessor = (deps: TelegramMessageProcessorDep
     // the spool drain so the per-chat lane frees while the agent turn continues.
     if (spooledReplay) {
       const existingParticipant =
-        turnContext.spooledReplayParticipant ??
-        (options?.isolateSpooledReplaySettlement
-          ? undefined
-          : getTelegramSpooledReplayDeferredParticipant());
+        turnContext.spooledReplayParticipant ?? ambientSpooledReplayParticipant;
       const participant =
         existingParticipant ??
         (options?.isolateSpooledReplaySettlement

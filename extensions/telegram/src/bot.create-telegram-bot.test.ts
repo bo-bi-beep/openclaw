@@ -3036,13 +3036,7 @@ describe("createTelegramBot", () => {
       fetchSpy.mockRestore();
     }
   });
-  it("triggers typing cue via onReplyStart", async () => {
-    dispatchReplyWithBufferedBlockDispatcher.mockImplementationOnce(
-      async ({ dispatcherOptions }) => {
-        await dispatcherOptions.typingCallbacks?.onReplyStart?.();
-        return { queuedFinal: false, counts: { block: 0, final: 0, tool: 0 } };
-      },
-    );
+  it("starts typing when a user-request turn is accepted", async () => {
     createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     await handler({

@@ -1,4 +1,3 @@
-import { logTypingFailure } from "openclaw/plugin-sdk/channel-feedback";
 import {
   readAgentRunTerminalOutcome,
   hasFinalInboundReplyDispatch,
@@ -45,10 +44,7 @@ import {
 } from "./bot-message-dispatch-reply.js";
 import { resolveHumanDelayConfig } from "./bot-message-dispatch.agent.runtime.js";
 import type { TelegramDispatchTurn as Turn } from "./bot-message-dispatch.types.js";
-import { TELEGRAM_CHAT_ACTION_INTERVAL_MS } from "./chat-action-timing.js";
 import { telegramInboundEventDelivery } from "./inbound-event-delivery.js";
-
-const TELEGRAM_MAX_CONSECUTIVE_TYPING_FAILURES = 5;
 
 export async function runTelegramDispatchTurn(turn: Turn) {
   const { context } = turn;
@@ -71,82 +67,18 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       { inboundEventKind: context.ctxPayload.InboundEventKind },
     );
   const endDeliveryCorrelation = beginDeliveryCorrelation();
-  const { typingAbortController } = context;
-  let typingStartTimer: ReturnType<typeof setTimeout> | undefined;
-  let removeTypingAbortListener: (() => void) | undefined;
-  let cleanupTyping = () => typingAbortController.abort();
-  const handleTypingStartError = (err: unknown) => {
-    if (typingAbortController.signal.aborted) {
-      return;
-    }
-    logTypingFailure({
-      log: logVerbose,
-      channel: "telegram",
-      target: String(context.chatId),
-      error: err,
-    });
-  };
 
   try {
-    const { onModelSelected, typingCallbacks, ...replyPipeline } = (
-      turn.telegramDeps.createChannelMessageReplyPipeline ?? createChannelMessageReplyPipeline
-    )({
+    const {
+      onModelSelected,
+      typingCallbacks: _typingCallbacks,
+      ...replyPipeline
+    } = (turn.telegramDeps.createChannelMessageReplyPipeline ?? createChannelMessageReplyPipeline)({
       cfg: turn.cfg,
       agentId: context.route.agentId,
       channel: "telegram",
       accountId: context.route.accountId,
-      typing: {
-        start: () => context.sendTyping(typingAbortController.signal),
-        keepaliveIntervalMs: TELEGRAM_CHAT_ACTION_INTERVAL_MS,
-        // This dispatch turn owns terminal cleanup; a fixed TTL would kill
-        // feedback while the same long-running task is still active.
-        maxDurationMs: 0,
-        maxConsecutiveFailures: TELEGRAM_MAX_CONSECUTIVE_TYPING_FAILURES,
-        onStartError: handleTypingStartError,
-      },
     });
-    cleanupTyping = () => {
-      if (typingStartTimer !== undefined) {
-        clearTimeout(typingStartTimer);
-        typingStartTimer = undefined;
-      }
-      typingCallbacks?.onCleanup?.();
-      typingAbortController.abort();
-    };
-    const typingAbortSignal = turn.turnAdoptionLifecycle?.abortSignal;
-    if (typingAbortSignal) {
-      const abortTyping = () => cleanupTyping();
-      typingAbortSignal.addEventListener("abort", abortTyping, { once: true });
-      removeTypingAbortListener = () => typingAbortSignal.removeEventListener("abort", abortTyping);
-      if (typingAbortSignal.aborted) {
-        abortTyping();
-      }
-    }
-    if (!isRoomEvent && !typingAbortSignal?.aborted && typingCallbacks) {
-      const elapsedSinceInitialCueMs =
-        context.initialTypingCueAtMs === undefined
-          ? TELEGRAM_CHAT_ACTION_INTERVAL_MS
-          : Math.max(0, Date.now() - context.initialTypingCueAtMs);
-      const startDelayMs = Math.max(0, TELEGRAM_CHAT_ACTION_INTERVAL_MS - elapsedSinceInitialCueMs);
-      const startTypingHeartbeat = async () => {
-        try {
-          await typingCallbacks.onReplyStart();
-        } catch (err) {
-          handleTypingStartError(err);
-        }
-      };
-      if (startDelayMs > 0) {
-        // Adopt the eager intake cue instead of spending a duplicate request.
-        // The one-shot timer becomes the channel heartbeat at the next cadence.
-        typingStartTimer = setTimeout(() => {
-          typingStartTimer = undefined;
-          void startTypingHeartbeat();
-        }, startDelayMs);
-        typingStartTimer.unref?.();
-      } else {
-        void startTypingHeartbeat();
-      }
-    }
     const handleDeliveryError = async (err: unknown, info: { kind: string }) => {
       await Promise.resolve(
         handleReplyError(turn, err, info as Parameters<typeof handleReplyError>[2]),
@@ -190,8 +122,8 @@ export async function runTelegramDispatchTurn(turn: Turn) {
             >,
           },
           dispatcherOptions: {
-            // The run-scoped Telegram heartbeat above is the sole typing owner.
-            // Passing it into core would add an independent timer and safety TTL.
+            // Accepted Telegram context owns the sole foreground heartbeat.
+            // Passing typing into core would add an independent timer and safety TTL.
             ...replyPipeline,
             humanDelay: resolveHumanDelayConfig(turn.cfg, context.route.agentId),
             beforeDeliver: async (payload) => payload,
@@ -379,11 +311,6 @@ export async function runTelegramDispatchTurn(turn: Turn) {
       turnResult.dispatchResult.sourceReplyDeliveryMode === "message_tool_only";
     return true;
   } finally {
-    try {
-      removeTypingAbortListener?.();
-      cleanupTyping();
-    } finally {
-      endDeliveryCorrelation();
-    }
+    endDeliveryCorrelation();
   }
 }

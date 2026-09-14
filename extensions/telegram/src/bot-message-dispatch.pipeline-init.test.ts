@@ -1,4 +1,3 @@
-import { createTypingCallbacks } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { expect, it, vi } from "vitest";
 import {
@@ -6,31 +5,30 @@ import {
   createContext,
   createRuntime,
   createStatusReactionController,
+  describeStickerImage,
   dispatchReplyWithBufferedBlockDispatcher,
   describeTelegramDispatch,
   dispatchWithContext,
 } from "./bot-message-dispatch.test-harness.js";
 import type { TelegramMessageContext } from "./bot-message-dispatch.test-harness.js";
 import { telegramInboundEventDelivery } from "./inbound-event-delivery.js";
+import { createTelegramTypingHeartbeat } from "./typing-heartbeat.js";
 
 const settledDispatchResult = {
   queuedFinal: false,
   counts: { block: 0, final: 0, tool: 0 },
 };
 
-function installTypingPipeline() {
-  createChannelMessageReplyPipeline.mockImplementationOnce((params) => {
-    if (!params.typing) {
-      throw new Error("expected Telegram typing options");
-    }
-    return {
-      responsePrefix: undefined,
-      responsePrefixContextProvider: () => ({ identityName: undefined }),
-      resolveResponsePrefix: () => undefined,
-      onModelSelected: () => undefined,
-      typingCallbacks: createTypingCallbacks(params.typing),
-    };
+function createActiveTypingContext(overrides?: Partial<TelegramMessageContext>) {
+  const context = createContext(overrides);
+  const typingHeartbeat = createTelegramTypingHeartbeat({
+    chatId: context.chatId,
+    sendTyping: context.sendTyping,
+    abortController: context.typingAbortController,
   });
+  context.typingHeartbeat = typingHeartbeat;
+  typingHeartbeat.start();
+  return context;
 }
 
 describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
@@ -50,13 +48,20 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     );
   });
 
-  it("does not enter the reply pipeline after the durable owner aborts", async () => {
+  it("does not enter the reply pipeline or restart typing after the durable owner aborts", async () => {
     const abortController = new AbortController();
+    const sendTyping = vi.fn();
     abortController.abort(new Error("handler-timeout"));
 
     await expect(
       dispatchWithContext({
-        context: createContext(),
+        context: createContext({
+          typingHeartbeat: {
+            cleanup: vi.fn(),
+            rebind: vi.fn(),
+            start: () => sendTyping(),
+          },
+        }),
         turnAdoptionLifecycle: {
           abortSignal: abortController.signal,
           onAdopted: vi.fn(),
@@ -66,6 +71,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       }),
     ).resolves.toEqual({ kind: "completed" });
 
+    expect(sendTyping).not.toHaveBeenCalled();
     expect(createChannelMessageReplyPipeline).not.toHaveBeenCalled();
   });
 
@@ -73,8 +79,9 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     vi.useFakeTimers();
     try {
       const dispatch = createDeferred<typeof settledDispatchResult>();
-      const context = createContext({ sendTyping: vi.fn(async () => undefined) });
-      installTypingPipeline();
+      const context = createActiveTypingContext({
+        sendTyping: vi.fn(async () => undefined),
+      });
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({ context });
@@ -83,12 +90,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       expect(context.sendTyping).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(1);
       expect(createChannelMessageReplyPipeline).toHaveBeenCalledWith(
-        expect.objectContaining({
-          typing: expect.objectContaining({
-            keepaliveIntervalMs: 4_000,
-            maxDurationMs: 0,
-          }),
-        }),
+        expect.not.objectContaining({ typing: expect.anything() }),
       );
       const dispatchArgs = dispatchReplyWithBufferedBlockDispatcher.mock.calls[0]?.[0];
       // Telegram owns this lifecycle outside core so its independent TTL cannot
@@ -115,25 +117,57 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     }
   });
 
-  it("adopts the eager intake cue without sending a duplicate action", async () => {
+  it("keeps typing alive through Telegram-owned pre-dispatch model work", async () => {
+    vi.useFakeTimers();
+    try {
+      const stickerDescription = createDeferred<string | null>();
+      const sendTyping = vi.fn(async () => undefined);
+      describeStickerImage.mockReturnValueOnce(stickerDescription.promise);
+      const processing = dispatchWithContext({
+        context: createActiveTypingContext({
+          ctxPayload: {
+            media: [{ path: "/tmp/sticker.webp", kind: "sticker" as const }],
+            Sticker: {
+              fileId: "sticker-file",
+              fileUniqueId: "sticker-unique",
+            },
+            StickerMediaIncluded: true,
+          } as TelegramMessageContext["ctxPayload"],
+          sendTyping,
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(sendTyping).toHaveBeenCalledTimes(3);
+      expect(dispatchReplyWithBufferedBlockDispatcher).not.toHaveBeenCalled();
+
+      stickerDescription.resolve("A waiting sticker");
+      await expect(processing).resolves.toEqual({ kind: "completed" });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("adopts the accepted context heartbeat without starting a duplicate timer", async () => {
     vi.useFakeTimers();
     try {
       const dispatch = createDeferred<typeof settledDispatchResult>();
       const sendTyping = vi.fn(async () => undefined);
-      await sendTyping();
-      const context = createContext({ initialTypingCueAtMs: Date.now(), sendTyping });
-      installTypingPipeline();
-      dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
+      const context = createActiveTypingContext({ sendTyping });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sendTyping).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
 
+      dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
       const processing = dispatchWithContext({ context });
       await vi.advanceTimersByTimeAsync(0);
 
       expect(sendTyping).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(1);
 
-      await vi.advanceTimersByTimeAsync(3_999);
-      expect(sendTyping).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(4_000);
       expect(sendTyping).toHaveBeenCalledTimes(2);
       expect(vi.getTimerCount()).toBe(1);
 
@@ -146,7 +180,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
     }
   });
 
-  it("cancels an in-flight eager typing cue when its turn settles", async () => {
+  it("cancels an in-flight typing action when its turn settles", async () => {
     vi.useFakeTimers();
     try {
       const dispatch = createDeferred<typeof settledDispatchResult>();
@@ -162,13 +196,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
           );
         });
       });
-      const eagerTyping = sendTyping(typingAbortController.signal).catch(() => undefined);
-      const context = createContext({
-        initialTypingCueAtMs: Date.now(),
-        sendTyping,
-        typingAbortController,
-      });
-      installTypingPipeline();
+      const context = createActiveTypingContext({ sendTyping, typingAbortController });
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({ context });
@@ -178,7 +206,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
 
       dispatch.resolve(settledDispatchResult);
       await expect(processing).resolves.toEqual({ kind: "completed" });
-      await eagerTyping;
+      await vi.advanceTimersByTimeAsync(0);
 
       expect(typingAbortController.signal.aborted).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
@@ -197,10 +225,11 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       const sendTyping = vi.fn(async () => {
         throw new Error("chat action unavailable");
       });
-      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
-      const processing = dispatchWithContext({ context: createContext({ sendTyping }) });
+      const processing = dispatchWithContext({
+        context: createActiveTypingContext({ sendTyping }),
+      });
       await vi.advanceTimersByTimeAsync(16_000);
 
       expect(sendTyping).toHaveBeenCalledTimes(5);
@@ -240,11 +269,10 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
           );
         });
       });
-      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(dispatch.promise);
 
       const processing = dispatchWithContext({
-        context: createContext({ sendTyping }),
+        context: createActiveTypingContext({ sendTyping }),
         turnAdoptionLifecycle: {
           abortSignal: abortController.signal,
           onAdopted: vi.fn(),
@@ -283,11 +311,13 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       } as TelegramMessageContext["ctxPayload"];
       const interrupted = createDeferred<typeof settledDispatchResult>();
       const firstSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(interrupted.promise);
 
       const firstProcessing = dispatchWithContext({
-        context: createContext({ ctxPayload: sourcePayload, sendTyping: firstSendTyping }),
+        context: createActiveTypingContext({
+          ctxPayload: sourcePayload,
+          sendTyping: firstSendTyping,
+        }),
         retryDispatchErrors: true,
         suppressFailureFallback: true,
       });
@@ -303,10 +333,12 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
 
       const resumed = createDeferred<typeof settledDispatchResult>();
       const resumedSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher.mockReturnValueOnce(resumed.promise);
       const resumedProcessing = dispatchWithContext({
-        context: createContext({ ctxPayload: sourcePayload, sendTyping: resumedSendTyping }),
+        context: createActiveTypingContext({
+          ctxPayload: sourcePayload,
+          sendTyping: resumedSendTyping,
+        }),
       });
       await vi.advanceTimersByTimeAsync(4_000);
 
@@ -330,20 +362,18 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       const second = createDeferred<typeof settledDispatchResult>();
       const firstSendTyping = vi.fn(async () => undefined);
       const secondSendTyping = vi.fn(async () => undefined);
-      installTypingPipeline();
-      installTypingPipeline();
       dispatchReplyWithBufferedBlockDispatcher
         .mockReturnValueOnce(first.promise)
         .mockReturnValueOnce(second.promise);
 
       const firstProcessing = dispatchWithContext({
-        context: createContext({
+        context: createActiveTypingContext({
           ctxPayload: { MessageSid: "overlap-1" } as TelegramMessageContext["ctxPayload"],
           sendTyping: firstSendTyping,
         }),
       });
       const secondProcessing = dispatchWithContext({
-        context: createContext({
+        context: createActiveTypingContext({
           ctxPayload: { MessageSid: "overlap-2" } as TelegramMessageContext["ctxPayload"],
           sendTyping: secondSendTyping,
         }),
@@ -387,7 +417,7 @@ describeTelegramDispatch("dispatchTelegramMessage pipeline-init", () => {
       throw new Error("pipeline initialization failed");
     });
 
-    const context = createContext({
+    const context = createActiveTypingContext({
       ctxPayload: {
         SessionKey: sessionKey,
         ChatType: "direct",

@@ -279,7 +279,7 @@ function scheduleDmTopicLabel(params: {
   })();
 }
 
-export const dispatchTelegramMessage = async (
+const dispatchTelegramMessageImpl = async (
   dispatchParams: DispatchTelegramMessageParams,
 ): Promise<TelegramDispatchResult> => {
   const {
@@ -296,6 +296,9 @@ export const dispatchTelegramMessage = async (
   } = dispatchParams;
   const dispatchStartedAt = Date.now();
   const dispatchContext = resolveDispatchTelegramContext({ context });
+  if (!dispatchContext.typingAbortController.signal.aborted) {
+    dispatchContext.typingHeartbeat?.start();
+  }
   const telegramDeps =
     injectedTelegramDeps ?? (await import("./bot-deps.js")).defaultTelegramBotDeps;
   const loadFreshSessionEntry = createFreshTelegramSessionEntryLoader({ cfg, telegramDeps });
@@ -521,4 +524,26 @@ export const dispatchTelegramMessage = async (
     );
   }
   return { kind: "completed" };
+};
+
+export const dispatchTelegramMessage = async (
+  dispatchParams: DispatchTelegramMessageParams,
+): Promise<TelegramDispatchResult> => {
+  const cleanupTyping = () => {
+    dispatchParams.context.typingHeartbeat?.cleanup();
+    dispatchParams.context.typingAbortController.abort();
+  };
+  const abortSignal = dispatchParams.turnAdoptionLifecycle?.abortSignal;
+  const abortTyping = () => cleanupTyping();
+  if (abortSignal?.aborted) {
+    abortTyping();
+  } else {
+    abortSignal?.addEventListener("abort", abortTyping, { once: true });
+  }
+  try {
+    return await dispatchTelegramMessageImpl(dispatchParams);
+  } finally {
+    abortSignal?.removeEventListener("abort", abortTyping);
+    cleanupTyping();
+  }
 };

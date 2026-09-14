@@ -244,6 +244,13 @@ describeTelegramDispatch("dispatchTelegramMessage context-recovery", () => {
       },
     });
     const sendChatAction = vi.fn(async () => undefined);
+    let recoveredTypingSender: ((signal?: AbortSignal) => Promise<void>) | undefined;
+    const rebindTyping = vi.fn((sendTyping: (signal?: AbortSignal) => Promise<void>) => {
+      recoveredTypingSender = sendTyping;
+    });
+    const startTyping = vi.fn(() => {
+      void recoveredTypingSender?.(new AbortController().signal);
+    });
     const sendChatActionHandler = {
       sendChatAction,
       isSuspended: vi.fn(() => false),
@@ -309,6 +316,11 @@ describeTelegramDispatch("dispatchTelegramMessage context-recovery", () => {
         historyLimit: 10,
         groupHistories,
         sendChatActionHandler,
+        typingHeartbeat: {
+          cleanup: vi.fn(),
+          rebind: rebindTyping,
+          start: startTyping,
+        },
         turn: {
           storePath: "/tmp/openclaw/telegram-sessions.json",
           recordInboundSession,
@@ -382,9 +394,9 @@ describeTelegramDispatch("dispatchTelegramMessage context-recovery", () => {
       }),
     );
     const pipelineArgs = expectRecordFields(mockCallArg(createChannelMessageReplyPipeline), {});
-    const typing = expectRecordFields(pipelineArgs.typing, {});
-    expect(typing.maxConsecutiveFailures).toBe(5);
-    await (typing.start as () => Promise<void>)();
+    expect(pipelineArgs.typing).toBeUndefined();
+    expect(rebindTyping).toHaveBeenCalledOnce();
+    expect(startTyping).toHaveBeenCalledOnce();
     expect(sendChatAction).toHaveBeenCalledWith(
       -1003774691294,
       "typing",

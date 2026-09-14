@@ -9,6 +9,7 @@ import {
   buildTelegramGroupPeerId,
   buildTelegramInboundOriginTarget,
   buildTypingThreadParams,
+  TELEGRAM_GENERAL_TOPIC_ID,
   type TelegramThreadSpec,
 } from "./bot/helpers.js";
 import {
@@ -17,8 +18,6 @@ import {
   retainTelegramGroupHistoryPromptContext,
   selectTelegramGroupHistoryAfterLastSelf,
 } from "./group-history-window.js";
-
-const TELEGRAM_GENERAL_TOPIC_ID = 1;
 
 function normalizeTelegramThreadId(value: unknown): number | undefined {
   return parseStrictPositiveInteger(value);
@@ -250,6 +249,7 @@ export function resolveDispatchTelegramContext(params: {
     threadId: threadSpec.id,
     action: "record_voice",
   });
+  params.context.typingHeartbeat?.rebind(recoveredSendTyping);
   migrateRecoveredTelegramGroupHistory({ context: params.context, recoveredHistoryKey });
   if (threadSpec.id != null) {
     // Keep the admitted payload object intact; replacing it would discard the
