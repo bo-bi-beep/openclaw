@@ -78,6 +78,8 @@ export type AgentCommandOpts = {
   model?: string;
   /** Explicit ordered fallback chain for this run. Undefined uses normal selection policy. */
   modelFallbacksOverride?: string[];
+  /** Suppress auth-profile persistence for caller-owned read-only credential scopes. */
+  authProfileStateMode?: "read-write" | "read-only";
   to?: string;
   sessionId?: string;
   sessionKey?: string;

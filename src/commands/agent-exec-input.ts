@@ -20,6 +20,7 @@ export type AgentExecCliOptions = {
   codeMode?: "direct" | "auto" | "code";
   localModelLean?: boolean;
   authEnvOnly?: boolean;
+  authSharedOauthReadOnly?: boolean;
   timeout?: string;
   json?: boolean;
 };

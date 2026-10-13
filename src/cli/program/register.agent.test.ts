@@ -124,6 +124,9 @@ describe("agent command registration", () => {
     expect(agent?.options.find((option) => option.long === "--local")?.description).toContain(
       "configured provider credentials or local CLI logins",
     );
+    expect(
+      exec?.options.find((option) => option.long === "--auth-shared-oauth-read-only")?.description,
+    ).toContain("without refresh");
   });
 
   it("runs agent command with verbose enabled for --verbose on", async () => {
@@ -251,6 +254,16 @@ describe("agent command registration", () => {
     expect(agentExecCommandMock).toHaveBeenCalledWith(
       "fix it",
       expect.objectContaining({ authEnvOnly: true }),
+      runtime,
+    );
+  });
+
+  it("opts into route-scoped shared OAuth read-through", async () => {
+    await runCli(["agent", "exec", "fix it", "--auth-shared-oauth-read-only"]);
+
+    expect(agentExecCommandMock).toHaveBeenCalledWith(
+      "fix it",
+      expect.objectContaining({ authSharedOauthReadOnly: true }),
       runtime,
     );
   });

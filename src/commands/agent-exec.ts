@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
 import { findAgentRunTerminalOutcome } from "../agents/agent-run-terminal-error.js";
 import { createAgentToolExecutionBudget } from "../agents/agent-tool-source-execution-guard.js";
@@ -100,6 +101,37 @@ function normalizeFallbacks(model: string | undefined, values: string[] | undefi
   return fallbacks;
 }
 
+async function resolveSharedOAuthProviderIds(params: {
+  config: OpenClawConfig;
+  agentId: string;
+  model?: string;
+  fallbacks: string[];
+}): Promise<ReadonlySet<string>> {
+  const [{ resolveAgentConfig }, { resolveDefaultModelForAgent }, modelInput] = await Promise.all([
+    import("../agents/agent-scope-config.js"),
+    import("../agents/model-selection.js"),
+    import("../config/model-input.js"),
+  ]);
+  const agentModel = resolveAgentConfig(params.config, params.agentId)?.model;
+  const configuredModel = agentModel ?? params.config.agents?.defaults?.model;
+  const primary =
+    params.model ??
+    modelInput.resolveAgentModelPrimaryValue(configuredModel) ??
+    (() => {
+      const resolved = resolveDefaultModelForAgent({ cfg: params.config, agentId: params.agentId });
+      return `${resolved.provider}/${resolved.model}`;
+    })();
+  const fallbacks =
+    params.model !== undefined
+      ? params.fallbacks
+      : modelInput.resolveAgentModelFallbackValues(configuredModel);
+  return new Set(
+    [primary, ...fallbacks]
+      .map((ref) => parseModelCatalogRef(ref)?.provider)
+      .filter((provider): provider is string => Boolean(provider)),
+  );
+}
+
 async function requireDirectory(value: string, label: string): Promise<string> {
   const resolved = path.resolve(value);
   let stat;
@@ -176,6 +208,10 @@ function isStructuredTimeoutError(error: unknown): boolean {
 
 function errorEnvelope(error: unknown, sessionId: string): AgentExecEnvelope {
   const status = isStructuredTimeoutError(error) ? "timeout" : "error";
+  const errorCode =
+    error && typeof error === "object" && "code" in error && typeof error.code === "string"
+      ? error.code
+      : undefined;
   return {
     ok: false,
     status,
@@ -186,7 +222,12 @@ function errorEnvelope(error: unknown, sessionId: string): AgentExecEnvelope {
     sessionId,
     error: {
       message: formatErrorMessage(error),
-      kind: status === "timeout" ? "timeout" : "exception",
+      kind:
+        status === "timeout"
+          ? "timeout"
+          : errorCode === "shared_oauth_refresh_required"
+            ? errorCode
+            : "exception",
     },
   };
 }
@@ -352,6 +393,14 @@ export async function agentExecCommand(
     const storedAuthAgentDir = resolveAgentDir(baseConfig, execAgentId);
     runtimePaths = await import("../config/paths.js");
     const storedAuthStateDir = runtimePaths.resolveStateDir();
+    const sharedOAuthProviderIds = opts.authSharedOauthReadOnly
+      ? await resolveSharedOAuthProviderIds({
+          config: baseConfig,
+          agentId: execAgentId,
+          model: opts.model,
+          fallbacks,
+        })
+      : undefined;
     // Capture cleanup before a child can finish or lose its native owner.
     const processScopeKey =
       deps.timeoutMs !== undefined || deps.maxToolCalls !== undefined
@@ -432,6 +481,7 @@ export async function agentExecCommand(
             fallbacks.length > 0 || deps.modelFallbacksOverride !== undefined
               ? fallbacks
               : undefined,
+          authProfileStateMode: opts.authSharedOauthReadOnly ? "read-only" : undefined,
           cleanupBundleMcpOnRunEnd: true,
           cleanupCliLiveSessionOnRunEnd: true,
           oneShotCliRun: true,
@@ -460,6 +510,7 @@ export async function agentExecCommand(
             storedAuthAgentDir,
             storedAuthStateDir,
             runWithPluginInstallRoots,
+            { sharedOAuthReadOnlyProviderIds: sharedOAuthProviderIds },
           );
     const result = await runtimeCleanup.run(() =>
       toolBudget.run(() =>

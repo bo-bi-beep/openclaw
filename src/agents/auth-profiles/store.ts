@@ -138,7 +138,22 @@ type SaveAuthProfileStoreOptions = {
 const INLINE_OAUTH_TOKEN_FIELDS = ["access", "refresh", "idToken"] as const;
 type AuthProfileRuntimeMode =
   | { kind: "env-only" }
-  | { kind: "agent-dir"; agentDir: string; sharedStore?: AuthProfileStore; env: NodeJS.ProcessEnv };
+  | {
+      kind: "agent-dir";
+      agentDir: string;
+      sharedStore?: AuthProfileStore;
+      sharedReadOnlyOAuthProfileIds?: ReadonlySet<string>;
+      env: NodeJS.ProcessEnv;
+    };
+
+export class SharedOAuthRefreshRequiredError extends Error {
+  readonly code = "shared_oauth_refresh_required";
+
+  constructor() {
+    super("shared_oauth_refresh_required: the shared OAuth token must be refreshed by its owner");
+    this.name = "SharedOAuthRefreshRequiredError";
+  }
+}
 
 const authProfileRuntimeMode = new AsyncLocalStorage<AuthProfileRuntimeMode>();
 
@@ -152,6 +167,7 @@ export function withAuthProfileStoreAgentDir<T>(
   agentDir: string,
   sharedStateDir: string,
   run: () => T,
+  options?: { sharedOAuthReadOnlyProviderIds?: ReadonlySet<string> },
 ): T {
   const env = { ...process.env, OPENCLAW_STATE_DIR: sharedStateDir };
   let sharedStore: AuthProfileStore | undefined;
@@ -164,16 +180,38 @@ export function withAuthProfileStoreAgentDir<T>(
   }
   // Temporary runs must not acquire a second OAuth refresh owner. Keep this
   // read-through view in the operation scope, never in a persisted agent store.
+  let sharedReadOnlyOAuthProfileIds: Set<string> | undefined;
   if (sharedStore) {
+    sharedReadOnlyOAuthProfileIds = new Set();
     sharedStore.profiles = Object.fromEntries(
-      Object.entries(sharedStore.profiles).filter(
-        ([, credential]) =>
-          resolveAuthProfilePortability(credential).reason === "portable-static-credential",
-      ),
+      Object.entries(sharedStore.profiles).filter(([profileId, credential]) => {
+        if (resolveAuthProfilePortability(credential).reason === "portable-static-credential") {
+          return true;
+        }
+        if (
+          credential.type === "oauth" &&
+          options?.sharedOAuthReadOnlyProviderIds?.has(credential.provider)
+        ) {
+          sharedReadOnlyOAuthProfileIds?.add(profileId);
+          return true;
+        }
+        return false;
+      }),
     );
     pruneAuthProfileStoreReferences(sharedStore, new Set(Object.keys(sharedStore.profiles)));
   }
-  return authProfileRuntimeMode.run({ kind: "agent-dir", agentDir, sharedStore, env }, run);
+  return authProfileRuntimeMode.run(
+    { kind: "agent-dir", agentDir, sharedStore, sharedReadOnlyOAuthProfileIds, env },
+    run,
+  );
+}
+
+export function isScopedSharedReadOnlyOAuthProfile(profileId: string | undefined): boolean {
+  if (!profileId) {
+    return false;
+  }
+  const mode = authProfileRuntimeMode.getStore();
+  return mode?.kind === "agent-dir" && mode.sharedReadOnlyOAuthProfileIds?.has(profileId) === true;
 }
 
 function getScopedAuthProfileEnv(): NodeJS.ProcessEnv | undefined {

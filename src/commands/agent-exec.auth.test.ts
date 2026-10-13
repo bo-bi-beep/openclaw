@@ -6,6 +6,7 @@ import {
   ensureAuthProfileStore,
   findPersistedAuthProfileCredential,
   loadAuthProfileStoreForRuntime,
+  resolveApiKeyForProfile,
   resolveAuthProfileOrder,
   resolvePersistedAuthProfileOwnerAgentDir,
 } from "../agents/auth-profiles.js";
@@ -198,10 +199,16 @@ describe("agent exec stored auth", () => {
               expect(store.usageStats).toEqual({
                 "openai:token": sharedStore.usageStats["openai:token"],
               });
-              const { resolveApiKeyForProfile, saveAuthProfileStore } =
-                await import("../agents/auth-profiles.js");
+              const {
+                resolveApiKeyForProfile: resolveSharedApiKeyForProfile,
+                saveAuthProfileStore,
+              } = await import("../agents/auth-profiles.js");
               resolvedKey = (
-                await resolveApiKeyForProfile({ store, profileId: "openai:shared", cfg: {} })
+                await resolveSharedApiKeyForProfile({
+                  store,
+                  profileId: "openai:shared",
+                  cfg: {},
+                })
               )?.apiKey;
               expect(inspectPersistedAuthProfileStoreRaw(state.agentDir()).status).toBe(
                 localOverride ? "readable" : "missing",
@@ -225,6 +232,164 @@ describe("agent exec stored auth", () => {
       );
     },
   );
+
+  it("exposes only route-scoped shared OAuth in configured order without persistence", async () => {
+    await withOpenClawTestState(
+      { scenario: "minimal", env: { OPENAI_API_KEY: undefined } },
+      async (state) => {
+        writeConfigMachineState("auth.sharedStore", { location: "state-db" });
+        const sharedStore = {
+          version: 1,
+          order: {
+            openai: ["openai:second", "openai:first", "openai:static"],
+            anthropic: ["anthropic:fallback"],
+            google: ["google:unrelated"],
+          },
+          usageStats: { "openai:first": { lastUsed: 123 } },
+          profiles: {
+            "openai:first": {
+              type: "oauth" as const,
+              provider: "openai",
+              access: "shared-access-sentinel",
+              refresh: "shared-refresh-sentinel",
+              expires: Date.now() + 3_600_000,
+            },
+            "openai:second": {
+              type: "oauth" as const,
+              provider: "openai",
+              access: "shared-second-access",
+              refresh: "shared-second-refresh",
+              expires: Date.now() + 3_600_000,
+            },
+            "google:unrelated": {
+              type: "oauth" as const,
+              provider: "google",
+              access: "unrelated-access-sentinel",
+              refresh: "unrelated-refresh-sentinel",
+              expires: Date.now() + 3_600_000,
+            },
+            "anthropic:fallback": {
+              type: "oauth" as const,
+              provider: "anthropic",
+              access: "fallback-access-sentinel",
+              refresh: "fallback-refresh-sentinel",
+              expires: Date.now() + 3_600_000,
+            },
+            "openai:static": {
+              type: "api_key" as const,
+              provider: "openai",
+              key: "static-key-sentinel",
+            },
+          },
+        };
+        writePersistedAuthProfileStoreRaw(sharedStore);
+        const { runtime } = createRuntime();
+        let scopedAgentDir: string | undefined;
+        let resolvedAccess: string | undefined;
+        const result = await agentExecCommand(
+          "inspect",
+          {
+            model: "openai/gpt-5.6-sol",
+            fallback: ["anthropic/claude-sonnet-4-6"],
+            authSharedOauthReadOnly: true,
+          },
+          runtime,
+          {
+            runAgent: async (options) => {
+              expect(options.authProfileStateMode).toBe("read-only");
+              const store = loadAuthProfileStoreForRuntime(undefined, {
+                externalCli: { mode: "none" },
+                syncExternalCli: false,
+              });
+              expect(Object.keys(store.profiles)).toEqual([
+                "openai:first",
+                "openai:second",
+                "anthropic:fallback",
+                "openai:static",
+              ]);
+              expect(resolveAuthProfileOrder({ store, provider: "openai", cfg: {} })).toEqual([
+                "openai:second",
+                "openai:first",
+                "openai:static",
+              ]);
+              resolvedAccess = (
+                await resolveApiKeyForProfile({
+                  store,
+                  profileId: "openai:first",
+                  cfg: {},
+                })
+              )?.apiKey;
+              const { saveAuthProfileStore } = await import("../agents/auth-profiles.js");
+              saveAuthProfileStore(store);
+              scopedAgentDir = process.env.OPENCLAW_STATE_DIR;
+              return successResult();
+            },
+          },
+        );
+
+        expect(result.envelope.error).toBeUndefined();
+        expect(resolvedAccess).toBe("shared-access-sentinel");
+        expect(readPersistedAuthProfileStoreRaw()).toEqual(sharedStore);
+        expect(scopedAgentDir).not.toBe(state.stateDir);
+        expect(JSON.stringify(readPersistedAuthProfileStoreRaw(state.agentDir()))).not.toContain(
+          "shared-access-sentinel",
+        );
+        expect(JSON.stringify(result)).not.toContain("shared-refresh-sentinel");
+        expect(JSON.stringify(runtime.log.mock.calls)).not.toContain("shared-refresh-sentinel");
+        expect(JSON.stringify(runtime.error.mock.calls)).not.toContain("shared-refresh-sentinel");
+      },
+    );
+  });
+
+  it("fails closed when shared OAuth requires refresh", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      writeConfigMachineState("auth.sharedStore", { location: "state-db" });
+      const sharedStore = {
+        version: 1,
+        profiles: {
+          "openai:expired": {
+            type: "oauth" as const,
+            provider: "openai",
+            access: "expired-access-sentinel",
+            refresh: "expired-refresh-sentinel",
+            expires: Date.now() - 1,
+          },
+          "openai:static": {
+            type: "api_key" as const,
+            provider: "openai",
+            key: "unrelated-static-sentinel",
+          },
+        },
+        order: { openai: ["openai:expired", "openai:static"] },
+      };
+      writePersistedAuthProfileStoreRaw(sharedStore);
+      const { runtime } = createRuntime();
+      let staticFallbackUsed = false;
+      const result = await agentExecCommand(
+        "inspect",
+        { model: "openai/gpt-5.6-sol", authSharedOauthReadOnly: true },
+        runtime,
+        {
+          runAgent: async () => {
+            const store = loadAuthProfileStoreForRuntime(undefined, {
+              externalCli: { mode: "none" },
+              syncExternalCli: false,
+            });
+            await resolveApiKeyForProfile({ store, profileId: "openai:expired", cfg: {} });
+            staticFallbackUsed = true;
+            return successResult();
+          },
+        },
+      );
+
+      expect(result.exitCode).toBe(1);
+      expect(result.envelope.error).toMatchObject({ kind: "shared_oauth_refresh_required" });
+      expect(result.envelope.error?.message).toContain("shared_oauth_refresh_required");
+      expect(staticFallbackUsed).toBe(false);
+      expect(readPersistedAuthProfileStoreRaw()).toEqual(sharedStore);
+      expect(JSON.stringify(result)).not.toContain("expired-refresh-sentinel");
+    });
+  });
 
   it("rejects an unreadable original shared store before entering temporary exec", async () => {
     await withOpenClawTestState({ scenario: "minimal", layout: "split" }, async (state) => {
