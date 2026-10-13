@@ -40,6 +40,8 @@ For reproducible runs, pin the config instead of inheriting it. `--config <path>
 
 Stored credentials are used by default, so a folder-scoped run reaches the same logins as the rest of the CLI. Pass `--auth-env-only` to restrict the run to provider keys already present in the process environment. That mode loads no config at all, and pairing it with `--config` is rejected rather than silently ignored, because a config supplies provider credentials through several surfaces at once: [inline keys and secret headers](/reference/secretref-credential-surface), an `env` block, and login-shell import. It also skips OpenClaw auth profiles and external Codex, Claude, or other CLI credential stores. Provider auth variables remain available to model authentication but are omitted from agent-launched host commands.
 
+Shared OAuth stays unavailable to temporary exec state by default. `--auth-shared-oauth-read-only` explicitly exposes fresh shared OAuth access tokens only for providers in the run's primary and fallback model route. The run cannot refresh or update those profiles; an expired or rejected token fails with `shared_oauth_refresh_required` so the shared store's owner can refresh it.
+
 On a clean installation without the Codex plugin, OpenAI API-key runs use the built-in OpenClaw runtime. The implicit Codex preference does not require installing a native harness before `--auth-env-only` can run. An explicitly configured Codex runtime or an existing Codex session pin still requires that harness.
 
 Select a primary and ordered fallback chain with repeatable flags:
@@ -134,6 +136,7 @@ This is evaluation-only evidence, not a CI or release gate. Results do not chang
 - `--fallback <provider/model>`: ordered fallback model; repeatable and requires `--model`
 - `--auth-env-only`: use only environment provider keys; skips stored credentials, external CLI credentials, and config entirely
 - `--no-auth-env-only`: allow stored and external CLI credentials (default)
+- `--auth-shared-oauth-read-only`: allow fresh shared OAuth for the primary/fallback route without refresh or store writes
 - `--timeout <seconds>`: deadline in seconds (default `600`; `0` disables it)
 - `--json`: emit the stable JSON envelope
 

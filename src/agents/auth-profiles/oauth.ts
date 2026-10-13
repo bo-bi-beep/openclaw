@@ -32,6 +32,7 @@ import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import { authProfilesLog, CLAUDE_CLI_PROFILE_ID } from "./constants.js";
 import {
   evaluateStoredCredentialEligibility,
+  hasUsableOAuthCredential,
   resolveTokenExpiryState,
 } from "./credential-state.js";
 import { formatAuthDoctorHint } from "./doctor.js";
@@ -49,7 +50,9 @@ import {
 import { loadAuthProfileStoreForSecretsRuntime } from "./store-runtime.js";
 import {
   findPersistedAuthProfileCredential,
+  isScopedSharedReadOnlyOAuthProfile,
   resolvePersistedAuthProfileOwnerAgentDir,
+  SharedOAuthRefreshRequiredError,
 } from "./store.js";
 import type { AuthProfileCredential, AuthProfileStore, OAuthCredential } from "./types.js";
 
@@ -487,6 +490,20 @@ export async function resolveApiKeyForProfile(
       email: cred.email,
       profileId,
       profileType: cred.type,
+    });
+  }
+
+  if (isScopedSharedReadOnlyOAuthProfile(profileId)) {
+    if (params.forceRefresh || !hasUsableOAuthCredential(cred)) {
+      throw new SharedOAuthRefreshRequiredError();
+    }
+    return buildApiKeyProfileResult({
+      apiKey: await buildOAuthApiKey(cred.provider, cred, { cfg }),
+      provider: cred.provider,
+      email: cred.email,
+      profileId,
+      profileType: cred.type,
+      credential: cred,
     });
   }
 

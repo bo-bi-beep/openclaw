@@ -9,10 +9,12 @@ import { prepareProviderRuntimeAuth } from "../../../plugins/provider-runtime.js
 import { SecretSurfaceUnavailableError } from "../../../secrets/runtime-degraded-state.js";
 import {
   type AuthProfileStore,
+  isScopedSharedReadOnlyOAuthProfile,
   isProfileInCooldown,
   markAuthProfileFailure,
   resolveProfilesUnavailableReason,
   resolveSubscriptionAuthModeForProfiles,
+  SharedOAuthRefreshRequiredError,
 } from "../../auth-profiles.js";
 import { OAuthRefreshFailureError } from "../../auth-profiles/oauth-refresh-failure.js";
 import {
@@ -407,7 +409,9 @@ export function createEmbeddedRunAuthController(params: {
     candidate: string | undefined,
     error: unknown,
   ): Promise<void> => {
-    if (!(error instanceof OAuthRefreshFailureError)) {
+    if (error instanceof SharedOAuthRefreshRequiredError) {
+      throw error;
+    } else if (!(error instanceof OAuthRefreshFailureError)) {
       return;
     }
     const profileId = error.profileId ?? candidate;
@@ -637,7 +641,6 @@ export function createEmbeddedRunAuthController(params: {
     while (nextIndex < params.profileCandidates.length) {
       const candidateIndex = nextIndex++;
       const candidate = params.profileCandidates[candidateIndex];
-      // Candidate exhaustion is run-local and never depends on a cooldown write.
       state.profileIndex = candidateIndex;
       if (
         candidate &&
@@ -720,7 +723,14 @@ export function createEmbeddedRunAuthController(params: {
     if (!isFailoverErrorMessage(errorText, { provider: params.provider })) {
       return false;
     }
-    if (classifyFailoverReason(errorText, { provider: params.provider }) !== "auth") {
+    const reason = classifyFailoverReason(errorText, { provider: params.provider });
+    if (
+      isScopedSharedReadOnlyOAuthProfile(state.lastProfileId) &&
+      (reason === "auth" || reason === "auth_permanent")
+    ) {
+      throw new SharedOAuthRefreshRequiredError();
+    }
+    if (reason !== "auth") {
       return false;
     }
     try {

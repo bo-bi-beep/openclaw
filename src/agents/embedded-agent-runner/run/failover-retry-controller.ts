@@ -2,8 +2,10 @@ import { sanitizeForLog } from "../../../../packages/terminal-core/src/ansi.js";
 import { sleepWithAbort } from "../../../infra/backoff.js";
 import {
   type AuthProfileFailureReason,
+  isScopedSharedReadOnlyOAuthProfile,
   markAuthProfileFailure,
   markInlineProviderApiKeyFailure,
+  SharedOAuthRefreshRequiredError,
 } from "../../auth-profiles.js";
 import { revokeRuntimeAuthMaterializations } from "../../auth-profiles/runtime-materializations.js";
 import type { FailoverReason } from "../../embedded-agent-helpers.js";
@@ -185,6 +187,9 @@ export function createEmbeddedRunFailoverRetryController(input: {
         return null;
       }
       const failedProfileId = input.getLastProfileId();
+      if (isScopedSharedReadOnlyOAuthProfile(failedProfileId)) {
+        throw new SharedOAuthRefreshRequiredError();
+      }
       const profileFailureReason = resolveProfileFailureReason(failoverReason);
       const userPinnedProfile =
         params.authProfileIdSource === "user" && failedProfileId === params.authProfileId;

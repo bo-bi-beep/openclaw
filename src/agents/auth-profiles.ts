@@ -68,7 +68,9 @@ export {
   hasAnyAuthProfileStoreSource,
   hasLocalAuthProfileStoreSource,
   findPersistedAuthProfileCredential,
+  isScopedSharedReadOnlyOAuthProfile,
   resolvePersistedAuthProfileOwnerAgentDir,
+  SharedOAuthRefreshRequiredError,
   withEnvOnlyAuthProfileStore,
   withAuthProfileStoreAgentDir,
 } from "./auth-profiles/store.js";

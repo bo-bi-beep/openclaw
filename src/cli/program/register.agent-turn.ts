@@ -131,6 +131,11 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/agent", "docs.openclaw.ai/cli/age
     )
     .option("--auth-env-only", "Use provider credentials from environment variables only", false)
     .option("--no-auth-env-only", "Allow stored and external CLI credential discovery")
+    .option(
+      "--auth-shared-oauth-read-only",
+      "Allow route-scoped shared OAuth without refresh or shared-store writes",
+      false,
+    )
     .option("--timeout <seconds>", "Agent deadline in seconds", "600")
     .option("--json", "Emit the stable agent-exec JSON envelope", false)
     .addHelpText(
